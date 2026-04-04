@@ -1,0 +1,98 @@
+Screen {
+    background: $surface;
+}
+
+#loading-indicator {
+    width: 100%;
+    height: 100%;
+    content-align: center middle;
+}
+
+/* Dashboard */
+DashboardTab {
+    height: 1fr;
+}
+
+DashboardTab DataTable {
+    height: 1fr;
+}
+
+DashboardTab #detail-bar {
+    height: 3;
+    padding: 0 1;
+    background: $surface-darken-1;
+    color: $text-muted;
+}
+
+DashboardTab #search-input {
+    dock: top;
+    width: 100%;
+    margin: 0;
+}
+
+/* Stats */
+StatsTab {
+    height: 1fr;
+    layout: grid;
+    grid-size: 2;
+    grid-gutter: 1;
+}
+
+StatsTab #model-table {
+    height: 1fr;
+}
+
+StatsTab #stats-summary {
+    height: 1fr;
+    padding: 1;
+}
+
+/* Dialog Viewer */
+DialogViewer {
+    height: 1fr;
+}
+
+DialogViewer #dialog-header {
+    height: 2;
+    padding: 0 1;
+    background: $primary-darken-2;
+    color: $text;
+}
+
+DialogViewer #dialog-tree {
+    height: 1fr;
+}
+
+DialogViewer #dialog-footer {
+    height: 1;
+    padding: 0 1;
+    background: $surface-darken-1;
+    color: $text-muted;
+}
+
+/* Query Console */
+QueryConsole {
+    height: 1fr;
+}
+
+QueryConsole #query-results {
+    height: 1fr;
+}
+
+QueryConsole #query-input {
+    height: 5;
+    border: tall $primary;
+}
+
+QueryConsole #query-status {
+    height: 1;
+    padding: 0 1;
+    background: $surface-darken-1;
+    color: $text-muted;
+}
+
+QueryConsole #views-help {
+    height: 1;
+    padding: 0 1;
+    color: $text-muted;
+}
