@@ -59,6 +59,12 @@ DialogViewer #dialog-header {
     color: $text;
 }
 
+DialogViewer #dialog-search {
+    dock: top;
+    width: 100%;
+    margin: 0;
+}
+
 DialogViewer #dialog-tree {
     height: 1fr;
 }

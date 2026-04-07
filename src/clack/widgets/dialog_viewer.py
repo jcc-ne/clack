@@ -7,7 +7,7 @@ from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.widget import Widget
-from textual.widgets import Static, Tree
+from textual.widgets import Input, Static, Tree
 
 from clack.models import DialogTurn, ToolCall
 
@@ -15,25 +15,29 @@ from clack.models import DialogTurn, ToolCall
 class DialogViewer(Widget):
     BINDINGS = [
         Binding("h", "export_html", "HTML Export"),
-        Binding("escape", "go_back", "Back"),
+        Binding("slash", "focus_search", "Search"),
+        Binding("escape", "dismiss", "Back / Close Search"),
     ]
 
     _db: duckdb.DuckDBPyConnection | None = None
     _session_id: str | None = None
     _session_title: str = ""
-    _dialog: list[DialogTurn] = []
+    _dialog: list[DialogTurn]
 
     def compose(self) -> ComposeResult:
         yield Static(
             "No session selected -- press [v] on a session in Dashboard",
             id="dialog-header",
         )
+        yield Input(placeholder="Search dialog...", id="dialog-search")
         yield Tree("Dialog", id="dialog-tree")
-        yield Static("[h] HTML Export  [Esc] Back to Dashboard", id="dialog-footer")
+        yield Static("[h] HTML Export  [/] Search  [Esc] Back to Dashboard", id="dialog-footer")
 
     def on_mount(self) -> None:
+        self._dialog = []
         tree = self.query_one("#dialog-tree", Tree)
         tree.show_root = False
+        self.query_one("#dialog-search", Input).display = False
 
     def load_session(
         self, db: duckdb.DuckDBPyConnection, session_id: str, title: str
@@ -44,6 +48,9 @@ class DialogViewer(Widget):
         self.query_one("#dialog-header", Static).update(
             f"Loading: {title}..."
         )
+        search = self.query_one("#dialog-search", Input)
+        search.value = ""
+        search.display = False
         self._fetch_dialog()
 
     @work(thread=True, exclusive=True, group="dialog")
@@ -65,12 +72,19 @@ class DialogViewer(Widget):
         tree = self.query_one("#dialog-tree", Tree)
         tree.clear()
 
+        query = self.query_one("#dialog-search", Input).value.lower().strip()
+
         for turn in self._dialog:
             if turn.role == "user":
                 label = f"[bold cyan]USER[/]  {turn.content[:120]}"
-                node = tree.root.add_leaf(label)
+                if query and not _turn_matches(turn, query):
+                    continue
+                tree.root.add_leaf(label)
 
             elif turn.role == "assistant":
+                if query and not _turn_matches(turn, query):
+                    continue
+
                 model_tag = f"  ({turn.model.replace('claude-', '')})" if turn.model else ""
                 tokens_tag = ""
                 if turn.output_tokens:
@@ -109,6 +123,48 @@ class DialogViewer(Widget):
                 else:
                     tree.root.add_leaf(label)
 
+        # Update footer with match count when searching
+        if query:
+            visible = len(list(tree.root.children))
+            self.query_one("#dialog-footer", Static).update(
+                f"Showing {visible} matching turns  [Esc] Close search"
+            )
+        else:
+            self.query_one("#dialog-footer", Static).update(
+                "[h] HTML Export  [/] Search  [Esc] Back to Dashboard"
+            )
+
+    def action_focus_search(self) -> None:
+        search = self.query_one("#dialog-search", Input)
+        search.display = True
+        search.focus()
+
+    def action_dismiss(self) -> None:
+        search = self.query_one("#dialog-search", Input)
+        if search.display and (search.has_focus or search.value):
+            # Close search, restore full dialog
+            search.value = ""
+            search.display = False
+            self._render_dialog()
+            self.query_one("#dialog-tree", Tree).focus()
+        else:
+            # Go back to dashboard
+            from textual.widgets import DataTable
+
+            self.app.action_show_tab("dashboard")  # type: ignore[attr-defined]
+            try:
+                self.app.query_one(DataTable).focus()
+            except Exception:
+                pass
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "dialog-search":
+            self._render_dialog()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "dialog-search":
+            self.query_one("#dialog-tree", Tree).focus()
+
     def action_export_html(self) -> None:
         if not self._dialog or not self._session_id:
             return
@@ -120,8 +176,20 @@ class DialogViewer(Widget):
             f"Exported to {path} — opening in browser...  [Esc] Back"
         )
 
-    def action_go_back(self) -> None:
-        self.app.action_show_tab("dashboard")  # type: ignore[attr-defined]
+
+def _turn_matches(turn: DialogTurn, query: str) -> bool:
+    """Check if a turn matches the search query."""
+    if query in (turn.content or "").lower():
+        return True
+    if turn.tool_calls:
+        for tc in turn.tool_calls:
+            if query in tc.tool_name.lower():
+                return True
+            if query in str(tc.tool_input).lower():
+                return True
+            if query in (tc.tool_result or "").lower():
+                return True
+    return False
 
 
 def _format_tool_call_label(tc: ToolCall) -> str:
