@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import duckdb
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -36,8 +38,9 @@ class DashboardTab(Widget):
         table = self.query_one(DataTable)
         table.cursor_type = "row"
         table.add_column("Date", width=10)
+        table.add_column("Updated", width=12)
         table.add_column("Project", width=18)
-        table.add_column("Summary", width=45)
+        table.add_column("Summary", width=40)
         table.add_column("Model", width=14)
         table.add_column("Turns", width=5)
 
@@ -69,9 +72,10 @@ class DashboardTab(Widget):
                 .replace("-20250929", "")
             )
             date = s.started_at[:10] if s.started_at else "?"
+            updated = _relative_time(s.last_active) if s.last_active else "?"
             summary = s.title or s.summary[:80]
             table.add_row(
-                date, short_project, summary, short_model,
+                date, updated, short_project, summary, short_model,
                 str(s.turn_count), key=s.session_id,
             )
 
@@ -151,3 +155,26 @@ class DashboardTab(Widget):
             if s.session_id == session_id:
                 return s
         return None
+
+
+def _relative_time(timestamp: str) -> str:
+    """Convert a timestamp to a human-readable relative time string."""
+    try:
+        dt = datetime.fromisoformat(timestamp).astimezone(timezone.utc)
+        now = datetime.now(timezone.utc)
+        delta = now - dt
+        seconds = int(delta.total_seconds())
+        if seconds < 60:
+            return "just now"
+        minutes = seconds // 60
+        if minutes < 60:
+            return f"{minutes}m ago"
+        hours = minutes // 60
+        if hours < 24:
+            return f"{hours}h ago"
+        days = hours // 24
+        if days < 30:
+            return f"{days}d ago"
+        return timestamp[:10]
+    except (ValueError, TypeError):
+        return timestamp[:10] if timestamp else "?"
