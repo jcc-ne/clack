@@ -6,7 +6,8 @@ import duckdb
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Footer, Header, LoadingIndicator, TabbedContent, TabPane, Tree
+from textual.events import Key
+from textual.widgets import Footer, Header, Input, LoadingIndicator, TabbedContent, TabPane, Tree
 from textual.worker import Worker, WorkerState
 
 from clack.widgets.dashboard import DashboardTab
@@ -24,11 +25,15 @@ class ClackApp(App):
         Binding("3", "show_tab('query')", "Query", show=True),
         Binding("q", "quit", "Quit", show=True),
         Binding("t", "switch_theme", "Theme", show=True),
+        Binding("G", "nav_end", show=False),
+        Binding("ctrl+f", "nav_page_down", show=False),
+        Binding("ctrl+b", "nav_page_up", show=False),
     ]
 
     THEMES = ("solarized-dark", "solarized-light")
 
     db: duckdb.DuckDBPyConnection | None = None
+    _g_pending: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -64,6 +69,51 @@ class ClackApp(App):
             self.query_one(DashboardTab).load_data(self.db)
             self.query_one(StatsTab).load_data(self.db)
             self.query_one(QueryConsole).set_db(self.db)
+
+    def on_key(self, event: Key) -> None:
+        # Skip vim nav when an Input widget has focus
+        if isinstance(self.focused, Input):
+            self._g_pending = False
+            return
+        if event.key == "g":
+            if self._g_pending:
+                # gg -> go to top
+                self._g_pending = False
+                event.prevent_default()
+                self.action_nav_home()
+            else:
+                self._g_pending = True
+                event.prevent_default()
+            return
+        self._g_pending = False
+
+    def _nav_action(self, *actions: str) -> None:
+        """Try navigation actions on the focused widget, using the first one found."""
+        from textual.actions import SkipAction
+
+        widget = self.focused
+        if widget is None:
+            return
+        for action in actions:
+            method = getattr(widget, f"action_{action}", None)
+            if method is not None:
+                try:
+                    method()
+                except SkipAction:
+                    continue
+                return
+
+    def action_nav_home(self) -> None:
+        self._nav_action("scroll_top", "scroll_home")
+
+    def action_nav_end(self) -> None:
+        self._nav_action("scroll_bottom", "scroll_end")
+
+    def action_nav_page_down(self) -> None:
+        self._nav_action("page_down")
+
+    def action_nav_page_up(self) -> None:
+        self._nav_action("page_up")
 
     def action_switch_theme(self) -> None:
         current = self.THEMES.index(self.theme) if self.theme in self.THEMES else -1
