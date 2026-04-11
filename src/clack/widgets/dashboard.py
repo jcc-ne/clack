@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import duckdb
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.widget import Widget
 from textual.widgets import DataTable, Input, Static
 
 from clack.models import SessionSummary
+
+PROJECTS_DIR = Path.home() / ".claude/projects"
 
 
 class DashboardTab(Widget):
@@ -29,6 +34,7 @@ class DashboardTab(Widget):
         self.filtered: list[SessionSummary] = []
         self._db: duckdb.DuckDBPyConnection | None = None
         self._active_panes: dict[str, str] = {}  # session_id -> pane label
+        self._session_states: dict[str, str] = {}  # session_id -> "working" | "waiting"
 
     def compose(self) -> ComposeResult:
         yield Input(placeholder="/ Search sessions...", id="search-input")
@@ -38,6 +44,7 @@ class DashboardTab(Widget):
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
         table.cursor_type = "row"
+        table.cursor_foreground_priority = "renderable"
         table.add_column("Live", width=14)
         table.add_column("Date", width=10)
         table.add_column("Updated", width=12)
@@ -66,9 +73,13 @@ class DashboardTab(Widget):
         from clack.tmux import get_active_claude_panes
 
         self._active_panes = {}
+        self._session_states = {}
         for pane in get_active_claude_panes():
             if pane.session_id:
                 self._active_panes[pane.session_id] = pane.label
+                self._session_states[pane.session_id] = _detect_session_state(
+                    pane.session_id
+                )
 
     def _populate_table(self) -> None:
         table = self.query_one(DataTable)
@@ -88,7 +99,18 @@ class DashboardTab(Widget):
             updated = _relative_time(s.last_active) if s.last_active else "?"
             summary = s.title or s.summary[:80]
             label = self._active_panes.get(s.session_id)
-            live = f"● {label}" if label else ""
+            if label:
+                state = self._session_states.get(s.session_id, "working")
+                if state == "waiting":
+                    live = Text(f"● {label}", style="red")
+                elif state == "done" and _is_recent(s.last_active):
+                    live = Text(f"● {label}", style="yellow")
+                elif state == "done":
+                    live = Text(f"● {label}")
+                else:
+                    live = Text(f"● {label}", style="green")
+            else:
+                live = Text("")
             table.add_row(
                 live, date, updated, short_project, summary, short_model,
                 str(s.turn_count), key=s.session_id,
@@ -196,3 +218,56 @@ def _relative_time(timestamp: str) -> str:
         return timestamp[:10]
     except (ValueError, TypeError):
         return timestamp[:10] if timestamp else "?"
+
+
+def _is_recent(timestamp: str, hours: int = 24) -> bool:
+    """Return True if the timestamp is within the last N hours."""
+    try:
+        dt = datetime.fromisoformat(timestamp).astimezone(timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds() < hours * 3600
+    except (ValueError, TypeError):
+        return False
+
+
+def _detect_session_state(session_id: str) -> str:
+    """Detect the state of a live session.
+
+    Returns:
+        "working" — actively generating or executing tools (green)
+        "waiting" — blocked on tool permission approval (red)
+        "done"    — finished work, stop_reason=end_turn (yellow)
+    """
+    for jsonl in PROJECTS_DIR.glob(f"*/{session_id}.jsonl"):
+        try:
+            size = jsonl.stat().st_size
+            with open(jsonl, "rb") as f:
+                if size > 4096:
+                    f.seek(size - 4096)
+                    f.readline()  # skip partial first line
+                data = f.read().decode("utf-8", errors="replace")
+
+            for line in reversed(data.strip().splitlines()):
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                etype = event.get("type")
+                if etype == "system":
+                    continue  # skip turn_duration etc, look deeper
+                if etype == "assistant":
+                    msg = event.get("message", {})
+                    stop = msg.get("stop_reason") if isinstance(msg, dict) else None
+                    if stop == "end_turn":
+                        return "done"
+                    if stop == "tool_use":
+                        return "waiting"  # blocked on tool permission
+                    return "working"  # still streaming
+                if etype == "user":
+                    if event.get("isSidechain"):
+                        continue  # tool result, keep looking
+                    return "working"  # real user input → assistant processing
+                # skip attachment, custom-title, etc.
+        except OSError:
+            pass
+    return "working"
