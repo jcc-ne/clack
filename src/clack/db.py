@@ -1,6 +1,6 @@
 """DuckDB data layer for clack.
 
-Reads Claude Code session JSONL files directly via read_json_auto.
+Reads Claude Code session JSONL files via read_json with an explicit schema.
 All queries run against an in-memory temp table built on startup.
 """
 
@@ -76,6 +76,41 @@ def _get_changed_files() -> list[str]:
     return changed
 
 
+_READ_JSON_SCHEMA = """{
+    type: 'VARCHAR',
+    sessionId: 'VARCHAR',
+    "timestamp": 'VARCHAR',
+    uuid: 'VARCHAR',
+    parentUuid: 'VARCHAR',
+    isSidechain: 'BOOLEAN',
+    message: 'STRUCT(
+        role VARCHAR,
+        content JSON,
+        model VARCHAR,
+        id VARCHAR,
+        type VARCHAR,
+        stop_reason VARCHAR,
+        stop_sequence VARCHAR,
+        usage STRUCT(
+            input_tokens BIGINT,
+            cache_creation_input_tokens BIGINT,
+            cache_read_input_tokens BIGINT,
+            output_tokens BIGINT
+        )
+    )',
+    cwd: 'VARCHAR',
+    gitBranch: 'VARCHAR',
+    version: 'VARCHAR',
+    customTitle: 'VARCHAR',
+    slug: 'VARCHAR',
+    toolUseResult: 'JSON',
+    durationMs: 'BIGINT',
+    subtype: 'VARCHAR',
+    sourceToolAssistantUUID: 'VARCHAR',
+    userType: 'VARCHAR'
+}"""
+
+
 def _load_raw_records(
     con: duckdb.DuckDBPyConnection, source: str | list[str],
 ) -> None:
@@ -88,14 +123,31 @@ def _load_raw_records(
         glob_expr = f"'{source}'"
 
     select_sql = f"""
-        SELECT *,
+        SELECT
+            type,
+            sessionId::UUID AS sessionId,
+            "timestamp",
+            uuid::UUID AS uuid,
+            parentUuid::UUID AS parentUuid,
+            COALESCE(isSidechain, false) AS isSidechain,
+            message,
+            cwd,
+            gitBranch,
+            version,
+            customTitle,
+            slug,
+            toolUseResult,
+            durationMs,
+            subtype,
+            sourceToolAssistantUUID::UUID AS sourceToolAssistantUUID,
+            userType,
             regexp_extract(filename, '.*/([^/]+)/[^/]+\\.jsonl$', 1) AS project_slug,
-            regexp_extract(filename, '.*/([^/]+)\\.jsonl$', 1) AS file_session_id
-        FROM read_json_auto(
+            regexp_extract(filename, '.*/([^/]+)\\.jsonl$', 1) AS file_session_id,
+            filename
+        FROM read_json(
             {glob_expr},
             format='newline_delimited',
-            union_by_name=true,
-            maximum_object_size=10485760,
+            columns={_READ_JSON_SCHEMA},
             filename=true,
             ignore_errors=true
         )
@@ -104,8 +156,7 @@ def _load_raw_records(
     # First call creates the table; subsequent calls insert into it
     try:
         con.execute("SELECT 1 FROM raw_records LIMIT 0")
-        # Use INSERT BY NAME so columns are matched, missing ones get NULL
-        con.execute(f"INSERT INTO raw_records BY NAME {select_sql}")
+        con.execute(f"INSERT INTO raw_records {select_sql}")
     except duckdb.CatalogException:
         con.execute(f"CREATE TEMP TABLE raw_records AS {select_sql}")
 
