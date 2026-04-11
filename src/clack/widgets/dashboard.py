@@ -28,6 +28,7 @@ class DashboardTab(Widget):
         self.sessions: list[SessionSummary] = []
         self.filtered: list[SessionSummary] = []
         self._db: duckdb.DuckDBPyConnection | None = None
+        self._active_panes: dict[str, str] = {}  # session_id -> pane label
 
     def compose(self) -> ComposeResult:
         yield Input(placeholder="/ Search sessions...", id="search-input")
@@ -37,10 +38,11 @@ class DashboardTab(Widget):
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
         table.cursor_type = "row"
+        table.add_column("Live", width=14)
         table.add_column("Date", width=10)
         table.add_column("Updated", width=12)
         table.add_column("Project", width=18)
-        table.add_column("Summary", width=40)
+        table.add_column("Summary", width=35)
         table.add_column("Model", width=14)
         table.add_column("Turns", width=5)
 
@@ -49,13 +51,24 @@ class DashboardTab(Widget):
         self._db = db
         self._fetch_and_populate()
 
-    def _fetch_and_populate(self) -> None:
-        from clack.db import get_sessions
+    def _fetch_and_populate(self, incremental: bool = False) -> None:
+        from clack.db import get_sessions, refresh
 
         assert self._db is not None
+        if incremental:
+            refresh(self._db)
         self.sessions = get_sessions(self._db)
         self.filtered = list(self.sessions)
+        self._refresh_active_panes()
         self._populate_table()
+
+    def _refresh_active_panes(self) -> None:
+        from clack.tmux import get_active_claude_panes
+
+        self._active_panes = {}
+        for pane in get_active_claude_panes():
+            if pane.session_id:
+                self._active_panes[pane.session_id] = pane.label
 
     def _populate_table(self) -> None:
         table = self.query_one(DataTable)
@@ -74,8 +87,10 @@ class DashboardTab(Widget):
             date = s.started_at[:10] if s.started_at else "?"
             updated = _relative_time(s.last_active) if s.last_active else "?"
             summary = s.title or s.summary[:80]
+            label = self._active_panes.get(s.session_id)
+            live = f"● {label}" if label else ""
             table.add_row(
-                date, updated, short_project, summary, short_model,
+                live, date, updated, short_project, summary, short_model,
                 str(s.turn_count), key=s.session_id,
             )
 
@@ -97,14 +112,17 @@ class DashboardTab(Widget):
                 )
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        """Enter pressed — resume session in tmux."""
+        """Enter pressed — jump to active pane or resume session."""
         sid = event.row_key.value if event.row_key else None
-        if sid is not None:
-            session = self._find_session(str(sid))
-            if session:
-                from clack.tmux import resume_session
+        if sid is None:
+            return
+        session = self._find_session(str(sid))
+        if not session:
+            return
 
-                resume_session(self.app, session.session_id, session.cwd or ".")
+        from clack.tmux import resume_session
+
+        resume_session(self.app, session.session_id, session.cwd or ".")
 
     def action_view_dialog(self) -> None:
         table = self.query_one(DataTable)
@@ -121,7 +139,7 @@ class DashboardTab(Widget):
 
     def action_refresh(self) -> None:
         if self._db:
-            self._fetch_and_populate()
+            self._fetch_and_populate(incremental=True)
 
     def action_focus_search(self) -> None:
         self.query_one("#search-input", Input).focus()

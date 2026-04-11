@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import duckdb
 from textual import work
+from textual.actions import SkipAction
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.events import Key
@@ -89,8 +90,6 @@ class ClackApp(App):
 
     def _nav_action(self, *actions: str) -> None:
         """Try navigation actions on the focused widget, using the first one found."""
-        from textual.actions import SkipAction
-
         widget = self.focused
         if widget is None:
             return

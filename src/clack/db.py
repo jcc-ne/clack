@@ -19,32 +19,95 @@ from clack.models import (
     ToolCall,
 )
 
-SESSIONS_GLOB = str(Path.home() / ".claude/projects/*/*.jsonl")
+SESSIONS_DIR = Path.home() / ".claude/projects"
+SESSIONS_GLOB = str(SESSIONS_DIR / "*/*.jsonl")
+
+# Tracks file mtimes for incremental refresh
+_file_mtimes: dict[str, float] = {}
 
 
 def get_connection() -> duckdb.DuckDBPyConnection:
     """Create a DuckDB connection and load session data."""
     con = duckdb.connect(":memory:")
-    _load_raw_records(con)
+    _load_raw_records(con, SESSIONS_GLOB)
+    _snapshot_mtimes()
     _create_views(con)
     return con
 
 
-def _load_raw_records(con: duckdb.DuckDBPyConnection) -> None:
-    con.execute(f"""
-        CREATE TEMP TABLE raw_records AS
+def refresh(con: duckdb.DuckDBPyConnection) -> None:
+    """Incrementally reload only changed session files."""
+    changed = _get_changed_files()
+    if not changed:
+        return
+
+    # Reload changed files one at a time to isolate bad files
+    for filepath in changed:
+        con.execute("DELETE FROM raw_records WHERE filename = ?", [filepath])
+        try:
+            _load_raw_records(con, [filepath])
+        except Exception:
+            pass  # skip malformed files
+    _snapshot_mtimes()
+
+
+def _snapshot_mtimes() -> None:
+    """Record current mtimes of all session JSONL files."""
+    global _file_mtimes
+    _file_mtimes = {}
+    for p in SESSIONS_DIR.glob("*/*.jsonl"):
+        try:
+            _file_mtimes[str(p)] = p.stat().st_mtime
+        except OSError:
+            pass
+
+
+def _get_changed_files() -> list[str]:
+    """Return paths of files that are new or modified since last snapshot."""
+    changed = []
+    for p in SESSIONS_DIR.glob("*/*.jsonl"):
+        path_str = str(p)
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            continue
+        if path_str not in _file_mtimes or mtime > _file_mtimes[path_str]:
+            changed.append(path_str)
+    return changed
+
+
+def _load_raw_records(
+    con: duckdb.DuckDBPyConnection, source: str | list[str],
+) -> None:
+    if isinstance(source, list):
+        if not source:
+            return
+        file_list = ", ".join(f"'{f}'" for f in source)
+        glob_expr = f"[{file_list}]"
+    else:
+        glob_expr = f"'{source}'"
+
+    select_sql = f"""
         SELECT *,
             regexp_extract(filename, '.*/([^/]+)/[^/]+\\.jsonl$', 1) AS project_slug,
             regexp_extract(filename, '.*/([^/]+)\\.jsonl$', 1) AS file_session_id
         FROM read_json_auto(
-            '{SESSIONS_GLOB}',
+            {glob_expr},
             format='newline_delimited',
             union_by_name=true,
             maximum_object_size=10485760,
             filename=true,
             ignore_errors=true
         )
-    """)
+    """
+
+    # First call creates the table; subsequent calls insert into it
+    try:
+        con.execute("SELECT 1 FROM raw_records LIMIT 0")
+        # Use INSERT BY NAME so columns are matched, missing ones get NULL
+        con.execute(f"INSERT INTO raw_records BY NAME {select_sql}")
+    except duckdb.CatalogException:
+        con.execute(f"CREATE TEMP TABLE raw_records AS {select_sql}")
 
 
 def _create_views(con: duckdb.DuckDBPyConnection) -> None:
