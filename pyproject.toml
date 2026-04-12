@@ -1,14 +1,33 @@
 [project]
-name = "clack"
+name = "clack-tui"
 version = "0.1.0"
 description = "TUI for browsing, searching, and resuming Claude Code sessions"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Janine" }]
 requires-python = ">=3.11"
+keywords = ["claude", "tui", "terminal", "ai", "textual", "claude-code"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Terminals",
+    "Topic :: Utilities",
+]
 dependencies = [
     "textual>=1.0.0",
     "duckdb>=1.1.0",
     "libtmux>=0.40.0",
     "jinja2>=3.1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jcc-ne/clack"
+Repository = "https://github.com/jcc-ne/clack"
+Issues = "https://github.com/jcc-ne/clack/issues"
 
 [project.scripts]
 clack = "clack.__main__:main"
