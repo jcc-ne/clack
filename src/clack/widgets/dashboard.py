@@ -57,6 +57,7 @@ class DashboardTab(Widget):
         """Called from app after DB is ready. Runs on main thread."""
         self._db = db
         self._fetch_and_populate()
+        self.set_interval(60, self._auto_refresh)
 
     def _fetch_and_populate(self, incremental: bool = False) -> None:
         from clack.db import get_sessions, refresh
@@ -158,6 +159,10 @@ class DashboardTab(Widget):
                     self.app.show_dialog(  # type: ignore[attr-defined]
                         sid, session.title or session.summary[:40],
                     )
+
+    def _auto_refresh(self) -> None:
+        if self._db:
+            self._fetch_and_populate(incremental=True)
 
     def action_refresh(self) -> None:
         if self._db:
