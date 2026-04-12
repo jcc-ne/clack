@@ -23,7 +23,8 @@ class ClackApp(App):
     BINDINGS = [
         Binding("1", "show_tab('dashboard')", "Dashboard", show=True),
         Binding("2", "show_tab('stats')", "Stats", show=True),
-        Binding("3", "show_tab('query')", "Query", show=True),
+        Binding("3", "show_tab('dialog')", "Dialog", show=True),
+        Binding("4", "show_tab('query')", "Query", show=True),
         Binding("q", "quit", "Quit", show=True),
         Binding("t", "switch_theme", "Theme", show=True),
         Binding("G", "nav_end", show=False),

@@ -37,7 +37,7 @@ class DashboardTab(Widget):
         self._session_states: dict[str, str] = {}  # session_id -> "working" | "waiting"
 
     def compose(self) -> ComposeResult:
-        yield Input(placeholder="/ Search sessions...", id="search-input")
+        yield Input(placeholder="/ Search sessions (FTS)...", id="search-input")
         yield DataTable(id="session-table")
         yield Static("Select a session to see details", id="detail-bar")
 
@@ -179,16 +179,29 @@ class DashboardTab(Widget):
         self.query_one(DataTable).focus()
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        query = event.value.lower().strip()
+        query = event.value.strip()
         if not query:
             self.filtered = list(self.sessions)
+            self._populate_table()
+            return
+
+        from clack.db import search_sessions_fts
+
+        matching_ids = search_sessions_fts(self._db, query) if self._db else None
+        if matching_ids is not None:
+            id_order = {sid: i for i, sid in enumerate(matching_ids)}
+            self.filtered = sorted(
+                [s for s in self.sessions if s.session_id in id_order],
+                key=lambda s: id_order[s.session_id],
+            )
         else:
+            q = query.lower()
             self.filtered = [
                 s for s in self.sessions
-                if query in (s.summary or "").lower()
-                or query in (s.title or "").lower()
-                or query in (s.cwd or "").lower()
-                or query in (s.primary_model or "").lower()
+                if q in (s.summary or "").lower()
+                or q in (s.title or "").lower()
+                or q in (s.cwd or "").lower()
+                or q in (s.primary_model or "").lower()
             ]
         self._populate_table()
 

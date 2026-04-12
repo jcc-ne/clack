@@ -32,6 +32,7 @@ def get_connection() -> duckdb.DuckDBPyConnection:
     _load_raw_records(con, SESSIONS_GLOB)
     _snapshot_mtimes()
     _create_views(con)
+    _create_fts_index(con)
     return con
 
 
@@ -285,6 +286,70 @@ def _create_views(con: duckdb.DuckDBPyConnection) -> None:
         GROUP BY 1
         ORDER BY 1
     """)
+
+
+_FTS_MAX_TURNS = 30
+
+
+def _create_fts_index(
+    con: duckdb.DuckDBPyConnection, max_turns: int = _FTS_MAX_TURNS
+) -> None:
+    """Build a full-text index over early user messages for session search."""
+    try:
+        con.execute("LOAD fts")
+        con.execute("DROP TABLE IF EXISTS session_full_text")
+        con.execute(f"""
+            CREATE TABLE session_full_text AS
+            WITH user_texts AS (
+                SELECT
+                    sessionId::VARCHAR AS session_id,
+                    STRING_AGG(TRIM('"' FROM message.content::VARCHAR), ' ') AS user_messages
+                FROM (
+                    SELECT
+                        sessionId,
+                        message,
+                        timestamp,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY sessionId
+                            ORDER BY timestamp
+                        ) AS turn_rn
+                    FROM raw_records
+                    WHERE type = 'user'
+                      AND json_type(message.content) = 'VARCHAR'
+                ) ranked
+                WHERE turn_rn <= {max_turns}
+                GROUP BY sessionId
+            )
+            SELECT
+                ut.session_id,
+                CONCAT_WS(' ', ut.user_messages, vs.title, vs.summary, vs.cwd) AS full_text
+            FROM user_texts ut
+            LEFT JOIN v_sessions vs ON vs.sessionId::VARCHAR = ut.session_id
+        """)
+        con.execute(
+            "PRAGMA create_fts_index('session_full_text', 'session_id', 'full_text')"
+        )
+    except Exception:
+        pass
+
+
+def search_sessions_fts(
+    con: duckdb.DuckDBPyConnection, query: str
+) -> list[str] | None:
+    """Return matching session IDs ordered by FTS score, or None on fallback."""
+    try:
+        rows = con.execute(
+            """
+            SELECT session_id
+            FROM session_full_text
+            WHERE fts_main_session_full_text.match_bm25(session_id, $1) IS NOT NULL
+            ORDER BY fts_main_session_full_text.match_bm25(session_id, $1) DESC
+            """,
+            [query],
+        ).fetchall()
+        return [r[0] for r in rows]
+    except Exception:
+        return None
 
 
 # --- Query functions ---
