@@ -13,59 +13,65 @@ PROJECTS_DIR = Path.home() / ".claude/projects"
 
 @dataclass
 class ActivePane:
-    """A tmux pane running a Claude process."""
+    """A claude process, optionally associated with a tmux pane."""
 
-    pane_id: str
-    session_name: str
-    window_index: int
-    pane_index: int
-    window_name: str
-    session_id: str | None  # resolved from --resume arg or JSONL matching
+    pid: int
     tty: str
+    session_id: str | None  # resolved from --resume arg or JSONL matching
+    # tmux-only fields (None when not running inside tmux)
+    pane_id: str | None = None
+    session_name: str | None = None
+    window_index: int | None = None
+    pane_index: int | None = None
+    window_name: str | None = None
 
     @property
     def label(self) -> str:
-        return f"{self.window_name}:{self.window_index}.{self.pane_index}"
+        if self.window_name is not None:
+            return f"{self.window_name}:{self.window_index}.{self.pane_index}"
+        return f"pid:{self.pid}"
 
 
 def get_active_claude_panes() -> list[ActivePane]:
-    """Detect all tmux panes running a Claude process.
+    """Detect all running Claude processes, with tmux pane info when available.
 
     For --resume <id> processes, session_id comes from the command args.
     For others (fresh starts, --continue, --resume without id), session_id
     is resolved by matching the process cwd + start time to JSONL files.
+
+    When running inside tmux, each result also carries pane location fields
+    (pane_id, session_name, window_index, pane_index, window_name).
+    Outside tmux those fields are None and label falls back to "pid:<pid>".
     """
-    if not is_in_tmux():
-        return []
-
-    # Step 1: Get all tmux panes with their TTYs and location info
-    try:
-        result = subprocess.run(
-            [
-                "tmux", "list-panes", "-a", "-F",
-                "#{pane_id}\t#{pane_tty}\t#{session_name}\t#{window_index}\t#{pane_index}\t#{window_name}",
-            ],
-            capture_output=True, text=True, check=False,
-        )
-        if result.returncode != 0:
-            return []
-    except FileNotFoundError:
-        return []
-
+    # Step 1: Get all tmux panes with their TTYs and location info (tmux only)
     tty_to_pane: dict[str, dict] = {}
-    for line in result.stdout.strip().splitlines():
-        parts = line.split("\t")
-        if len(parts) != 6:
-            continue
-        pane_id, tty, sess_name, win_idx, pane_idx, win_name = parts
-        short_tty = tty.replace("/dev/", "")
-        tty_to_pane[short_tty] = {
-            "pane_id": pane_id,
-            "session_name": sess_name,
-            "window_index": int(win_idx),
-            "pane_index": int(pane_idx),
-            "window_name": win_name,
-        }
+    if is_in_tmux():
+        try:
+            result = subprocess.run(
+                [
+                    "tmux", "list-panes", "-a", "-F",
+                    "#{pane_id}\t#{pane_tty}\t#{session_name}\t#{window_index}\t#{pane_index}\t#{window_name}",
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            if result.returncode != 0:
+                return []
+        except FileNotFoundError:
+            return []
+
+        for line in result.stdout.strip().splitlines():
+            parts = line.split("\t")
+            if len(parts) != 6:
+                continue
+            pane_id, tty, sess_name, win_idx, pane_idx, win_name = parts
+            short_tty = tty.replace("/dev/", "")
+            tty_to_pane[short_tty] = {
+                "pane_id": pane_id,
+                "session_name": sess_name,
+                "window_index": int(win_idx),
+                "pane_index": int(pane_idx),
+                "window_name": win_name,
+            }
 
     # Step 2: Find all claude processes with TTYs, args, and start times
     try:
@@ -95,7 +101,10 @@ def get_active_claude_panes() -> list[ActivePane]:
         if not m:
             continue
         pid_str, tty, date_str, args = m.groups()
-        if not claude_re.search(args) or tty not in tty_to_pane:
+        if not claude_re.search(args):
+            continue
+        # Inside tmux: only track processes that belong to a known pane
+        if tty_to_pane and tty not in tty_to_pane:
             continue
 
         try:
@@ -123,17 +132,18 @@ def get_active_claude_panes() -> list[ActivePane]:
 
     active: list[ActivePane] = []
     for pid, tty, resume_sid, start_ts in claude_procs:
-        pane_info = tty_to_pane[tty]
+        pane_info = tty_to_pane.get(tty)
         session_id = resume_sid or pid_to_session.get(pid)
 
         active.append(ActivePane(
-            pane_id=pane_info["pane_id"],
-            session_name=pane_info["session_name"],
-            window_index=pane_info["window_index"],
-            pane_index=pane_info["pane_index"],
-            window_name=pane_info["window_name"],
-            session_id=session_id,
+            pid=pid,
             tty=tty,
+            session_id=session_id,
+            pane_id=pane_info["pane_id"] if pane_info else None,
+            session_name=pane_info["session_name"] if pane_info else None,
+            window_index=pane_info["window_index"] if pane_info else None,
+            pane_index=pane_info["pane_index"] if pane_info else None,
+            window_name=pane_info["window_name"] if pane_info else None,
         ))
 
     return active
