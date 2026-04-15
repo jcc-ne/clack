@@ -35,6 +35,7 @@ class ClackApp(App):
     THEMES = ("solarized-dark", "solarized-light")
 
     db: duckdb.DuckDBPyConnection | None = None
+    _dashboard: DashboardTab | None = None
     _g_pending: bool = False
 
     def compose(self) -> ComposeResult:
@@ -55,6 +56,7 @@ class ClackApp(App):
         self.theme = "solarized-dark"
         self.query_one("#tabs").display = False
         self._load_data()
+        self.set_interval(60, self._auto_refresh_dashboard)
 
     @work(thread=True, group="db_init")
     def _load_data(self) -> duckdb.DuckDBPyConnection:
@@ -68,9 +70,18 @@ class ClackApp(App):
             self.query_one("#loading-indicator").display = False
             self.query_one("#tabs").display = True
             assert self.db is not None
-            self.query_one(DashboardTab).load_data(self.db)
+            self._dashboard = self.query_one(DashboardTab)
+            self._dashboard.load_data(self.db)
             self.query_one(StatsTab).load_data(self.db)
             self.query_one(QueryConsole).set_db(self.db)
+
+    def _auto_refresh_dashboard(self) -> None:
+        """Periodic refresh for the dashboard tab."""
+        if self.db is not None and self._dashboard is not None:
+            try:
+                self._dashboard._refresh_data()
+            except Exception:
+                pass
 
     def on_key(self, event: Key) -> None:
         # Skip vim nav when an Input widget has focus

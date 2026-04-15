@@ -178,10 +178,11 @@ def _assign_sessions(
 ) -> dict[int, str]:
     """Assign session IDs to processes, ensuring each session is claimed once.
 
-    For each process, finds JSONL files that were created before the process
-    started and modified after it started. When multiple processes match the
-    same session, the process whose start time is closest to the JSONL
-    birthtime wins (it's most likely the original launcher).
+    For each process, finds JSONL files that were created within 120s of the
+    process start and modified after it started.  The grace window accounts for
+    the delay between process launch and JSONL file creation (observed 4-72s).
+    When multiple processes match the same session, the process whose start
+    time is closest to the JSONL birthtime wins.
     """
     # Build candidate pairs: (pid, session_id, distance)
     # where distance = process_start - jsonl_birthtime (smaller = better match)
@@ -209,8 +210,10 @@ def _assign_sessions(
             dir_cache[encoded] = entries
 
         for sid, birthtime, mtime in dir_cache[encoded]:
-            if birthtime <= start_ts and mtime >= start_ts:
-                distance = start_ts - birthtime
+            # Allow birthtime up to 120s after process start because claude
+            # creates the JSONL file seconds (sometimes >60s) after launch.
+            if birthtime <= start_ts + 120 and mtime >= start_ts:
+                distance = abs(start_ts - birthtime)
                 candidates.append((pid, sid, distance))
 
     # Greedy assignment: sort by distance (closest match first),

@@ -35,6 +35,7 @@ class DashboardTab(Widget):
         self._db: duckdb.DuckDBPyConnection | None = None
         self._active_panes: dict[str, str] = {}  # session_id -> pane label
         self._session_states: dict[str, str] = {}  # session_id -> "working" | "waiting"
+        self._data_loaded: bool = False
 
     def compose(self) -> ComposeResult:
         yield Input(placeholder="/ Search sessions (FTS)...", id="search-input")
@@ -57,7 +58,7 @@ class DashboardTab(Widget):
         """Called from app after DB is ready. Runs on main thread."""
         self._db = db
         self._fetch_and_populate()
-        self.set_interval(60, self._auto_refresh)
+        self._data_loaded = True
 
     def _fetch_and_populate(self, incremental: bool = False) -> None:
         from clack.db import get_sessions, refresh
@@ -160,9 +161,12 @@ class DashboardTab(Widget):
                         sid, session.title or session.summary[:40],
                     )
 
-    def _auto_refresh(self) -> None:
-        if self._db:
-            self._fetch_and_populate(incremental=True)
+    def _refresh_data(self) -> None:
+        if self._db and self._data_loaded:
+            try:
+                self._fetch_and_populate(incremental=True)
+            except Exception:
+                pass
 
     def action_refresh(self) -> None:
         if self._db:
