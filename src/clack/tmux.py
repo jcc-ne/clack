@@ -233,10 +233,9 @@ def _assign_sessions(
 
 
 def jump_to_pane(pane: ActivePane) -> None:
-    """Switch to the tmux window and pane."""
+    """Switch the attached client to the tmux window and pane."""
     target = f"{pane.session_name}:{pane.window_index}.{pane.pane_index}"
-    subprocess.run(["tmux", "select-window", "-t", target], check=False)
-    subprocess.run(["tmux", "select-pane", "-t", target], check=False)
+    subprocess.run(["tmux", "switch-client", "-t", target], check=False)
 
 
 def resume_session(app, session_id: str, cwd: str) -> None:
