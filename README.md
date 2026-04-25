@@ -1,5 +1,9 @@
 # clack
 
+[![PyPI](https://img.shields.io/pypi/v/clack-tui)](https://pypi.org/project/clack-tui/)
+[![Python](https://img.shields.io/pypi/pyversions/clack-tui)](https://pypi.org/project/clack-tui/)
+[![License](https://img.shields.io/github/license/jcc-ne/clack)](LICENSE)
+
 A terminal UI for browsing, searching, and resuming [Claude Code](https://claude.ai/code) sessions.
 
 Browse your full session history, read past conversations, jump into stats, and resume any session — all without leaving the terminal.
