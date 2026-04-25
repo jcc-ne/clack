@@ -39,6 +39,13 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/clack"]
 
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.claude",
+    "/.envrc",
+    "/uv.lock",
+]
+
 [tool.ruff]
 target-version = "py311"
 src = ["src"]
