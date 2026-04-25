@@ -13,10 +13,10 @@ Browse your full session history, read past conversations, jump into stats, and 
 pipx install clack-tui
 
 # uvx (run without installing)
-uvx --from clack-tui clack
+uvx clack-tui
 ```
 
-The package name is `clack-tui` because `clack` is already taken on PyPI. The installed executable is `clack`.
+The package name is `clack-tui` because `clack` is already taken on PyPI. The package installs both `clack` and `clack-tui` executables.
 
 Requires Python 3.11+ and [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) installed.
 

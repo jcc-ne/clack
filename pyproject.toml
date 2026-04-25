@@ -1,6 +1,6 @@
 [project]
 name = "clack-tui"
-version = "0.1.0"
+version = "0.1.1"
 description = "TUI for browsing, searching, and resuming Claude Code sessions"
 readme = "README.md"
 license = { text = "MIT" }
@@ -31,6 +31,7 @@ Issues = "https://github.com/jcc-ne/clack/issues"
 
 [project.scripts]
 clack = "clack.__main__:main"
+clack-tui = "clack.__main__:main"
 
 [build-system]
 requires = ["hatchling"]

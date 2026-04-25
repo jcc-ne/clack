@@ -23,5 +23,15 @@ jobs:
       - name: Build package
         run: uv build
 
+      - name: Validate package metadata
+        run: uvx twine check dist/*
+
+      - name: Smoke test installed CLI
+        run: |
+          uv venv .smoke-test
+          . .smoke-test/bin/activate
+          uv pip install dist/*.whl
+          python -c "import shutil; import clack; import clack.__main__; assert shutil.which('clack'); assert shutil.which('clack-tui')"
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
