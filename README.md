@@ -56,7 +56,7 @@ clack reads your Claude Code session files directly from `~/.claude/projects/` �
 | `r` | Refresh session list |
 | `q` | Quit |
 
-**tmux:** If clack is running inside a tmux session, resuming opens the session in a new tmux window. Otherwise it suspends the TUI, runs `claude --resume`, and returns when you exit.
+**tmux / cmux:** If clack is running inside a tmux session, resuming opens the session in a new tmux window (or jumps to the existing pane if that session is already live). The same behavior works inside [cmux](https://github.com/manaflow-ai/cmux) — clack opens a new cmux workspace via `cmux new-workspace --cwd ... --command ...`, or focuses the existing pane with `cmux focus-pane`. Outside any multiplexer, clack suspends the TUI, runs `claude --resume`, and returns when you exit.
 
 If the DuckDB FTS extension is unavailable, dashboard search falls back to simple substring matching.
 
@@ -103,4 +103,4 @@ Release notes for TestPyPI and Trusted Publishing live in [docs/releasing.md](do
 
 - Python 3.11+
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) (session files at `~/.claude/projects/`)
-- tmux (optional — enables opening resumed sessions in a new window)
+- tmux or [cmux](https://github.com/manaflow-ai/cmux) (optional — enables jumping to live sessions and opening resumed sessions in a new window/workspace)

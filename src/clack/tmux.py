@@ -13,26 +13,45 @@ PROJECTS_DIR = Path.home() / ".claude/projects"
 
 @dataclass
 class ActivePane:
-    """A claude process, optionally associated with a tmux pane."""
+    """A claude process, optionally associated with a tmux or cmux pane."""
 
     pid: int
     tty: str
     session_id: str | None  # resolved from --resume arg or JSONL matching
-    # tmux-only fields (None when not running inside tmux)
+    # mux-only fields (None when not running inside any multiplexer)
     pane_id: str | None = None
-    session_name: str | None = None
+    session_name: str | None = None  # tmux session / cmux workspace
     window_index: int | None = None
     pane_index: int | None = None
     window_name: str | None = None
+    mux: str | None = None  # "tmux" | "cmux" | None
+    workspace_id: str | None = None  # cmux workspace ref for select-workspace fallback
 
     @property
     def label(self) -> str:
+        if self.mux == "cmux" and self.pane_id is not None:
+            ws = self.session_name or "?"
+            return f"{ws}:{self.pane_id}"
         if self.window_name is not None:
             return f"{self.window_name}:{self.window_index}.{self.pane_index}"
         return f"pid:{self.pid}"
 
 
 def get_active_claude_panes() -> list[ActivePane]:
+    """Detect all running Claude processes, with mux pane info when available.
+
+    Dispatches to the cmux backend when running inside cmux, otherwise uses
+    the tmux backend (which also covers the "no multiplexer" case — it just
+    returns processes without pane info).
+    """
+    from clack import cmux
+
+    if cmux.is_in_cmux():
+        return cmux.get_active_claude_panes()
+    return _get_active_tmux_panes()
+
+
+def _get_active_tmux_panes() -> list[ActivePane]:
     """Detect all running Claude processes, with tmux pane info when available.
 
     For --resume <id> processes, session_id comes from the command args.
@@ -144,6 +163,7 @@ def get_active_claude_panes() -> list[ActivePane]:
             window_index=pane_info["window_index"] if pane_info else None,
             pane_index=pane_info["pane_index"] if pane_info else None,
             window_name=pane_info["window_name"] if pane_info else None,
+            mux="tmux" if pane_info else None,
         ))
 
     return active
@@ -239,7 +259,18 @@ def jump_to_pane(pane: ActivePane) -> None:
 
 
 def resume_session(app, session_id: str, cwd: str) -> None:
-    """Resume a Claude Code session, jumping to existing pane if active."""
+    """Resume a Claude Code session, jumping to an existing pane if one is active."""
+    from clack import cmux
+
+    if cmux.is_in_cmux():
+        pane = cmux.find_pane_for_session(session_id)
+        if pane and cmux.jump_to_pane(pane):
+            return
+        if cmux.resume_in_new_workspace(session_id, cwd):
+            return
+        # cmux CLI missing/failed — fall through to suspended exec.
+        _resume_suspended(app, session_id, cwd)
+        return
     if is_in_tmux():
         pane = find_pane_for_session(session_id)
         if pane:
@@ -252,14 +283,15 @@ def resume_session(app, session_id: str, cwd: str) -> None:
 
 def find_pane_for_session(session_id: str) -> ActivePane | None:
     """Find an active tmux pane running a specific session."""
-    for pane in get_active_claude_panes():
+    for pane in _get_active_tmux_panes():
         if pane.session_id == session_id:
             return pane
     return None
 
 
 def is_in_tmux() -> bool:
-    return "TMUX" in os.environ
+    # cmux's tmux-compat shim sets TMUX too; treat that as cmux, not tmux.
+    return "TMUX" in os.environ and "CMUX_WORKSPACE_ID" not in os.environ
 
 
 def _resume_tmux_window(session_id: str, cwd: str) -> None:
