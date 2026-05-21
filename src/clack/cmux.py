@@ -34,7 +34,8 @@ _DEBUG_LOG = Path.home() / ".cache" / "clack" / "cmux.log"
 
 
 def _log(msg: str) -> None:
-    # Unconditional while cmux support is new; flip back to env-gated later.
+    if not os.environ.get("CLACK_DEBUG_CMUX"):
+        return
     try:
         _DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
         with _DEBUG_LOG.open("a") as f:
@@ -81,16 +82,19 @@ def get_active_claude_panes() -> list[ActivePane]:
     workspaces = _list_workspaces()
 
     # 2. For each workspace, list panes and build a surface_id → pane info map.
+    # We key by surface UUID because cmux's hierarchy is workspace → pane →
+    # surface, and a single pane can contain multiple surfaces (tabs). The
+    # surface UUID is what `focus-panel` consumes to land on the right tab.
     surface_to_pane: dict[str, dict] = {}
     for ws_id, ws_name in workspaces.items():
         for pane_ref, surface_ids in _list_panes(ws_id):
-            info = {
-                "pane_ref": pane_ref,
-                "workspace_id": ws_id,
-                "workspace_name": ws_name,
-            }
             for sid in surface_ids:
-                surface_to_pane[sid] = info
+                surface_to_pane[sid] = {
+                    "surface_id": sid,
+                    "pane_ref": pane_ref,
+                    "workspace_id": ws_id,
+                    "workspace_name": ws_name,
+                }
 
     # 3. Walk `ps` for claude processes (same parsing as tmux.py).
     claude_procs = _ps_claude_processes()
@@ -99,6 +103,7 @@ def get_active_claude_panes() -> list[ActivePane]:
 
     # 4. For each claude pid, read its env to grab CMUX_SURFACE_ID / WORKSPACE_ID.
     pid_to_env = _batch_get_envs([p[0] for p in claude_procs])
+    _log(f"pid_to_env={pid_to_env}  surface_to_pane_keys={list(surface_to_pane.keys())}")
 
     # 5. Resolve session_id for processes that weren't launched with --resume <id>.
     needs_resolve = [p for p in claude_procs if p[2] is None]
@@ -122,11 +127,15 @@ def get_active_claude_panes() -> list[ActivePane]:
             }
 
         session_id = resume_sid or pid_to_session.get(pid)
+        # For cmux we stash the surface UUID in pane_id (it's what focus-panel
+        # consumes to land on the correct tab) and the pane_ref in window_name
+        # (used as a fallback for focus-pane if focus-panel doesn't exist).
         active.append(ActivePane(
             pid=pid,
             tty=tty,
             session_id=session_id,
-            pane_id=pane_info["pane_ref"] if pane_info else None,
+            pane_id=pane_info["surface_id"] if pane_info else None,
+            window_name=pane_info["pane_ref"] if pane_info else None,
             session_name=pane_info["workspace_name"] if pane_info else None,
             mux="cmux" if pane_info else None,
             workspace_id=pane_info["workspace_id"] if pane_info else None,
@@ -143,31 +152,58 @@ def find_pane_for_session(session_id: str) -> ActivePane | None:
 
 
 def jump_to_pane(pane: ActivePane) -> bool:
-    """Focus a cmux pane. Falls back to select-workspace if focus-pane fails."""
+    """Focus a cmux surface (tab) within its pane.
+
+    cmux's hierarchy is workspace → pane → surface, and a pane can host
+    multiple surfaces. `focus-pane` lands on the pane but doesn't switch
+    surfaces, so a user with two claude sessions in the same pane would
+    keep landing on whichever was most recently active. We use
+    `focus-panel <surface-uuid>` (cmux's name for the focus-a-surface
+    primitive) and fall back through focus-pane → select-workspace.
+    """
     cmux_bin = _cmux_bin()
     if not cmux_bin:
         return False
-    if pane.pane_id:
-        args = [cmux_bin, "focus-pane", pane.pane_id]
-        if pane.workspace_id:
-            args.extend(["--workspace", pane.workspace_id])
-        try:
-            r = subprocess.run(args, capture_output=True, text=True, check=False)
-            _log(
-                f"focus-pane rc={r.returncode} args={args} "
-                f"stdout={r.stdout!r} stderr={r.stderr!r}"
-            )
-            if r.returncode == 0:
-                return True
-        except FileNotFoundError:
-            _log(f"focus-pane: FileNotFoundError args={args}")
-            return False
-    # focus-pane failed (stale pane ref, wrong id format, etc.) — fall back
-    # to selecting the workspace, which at least brings the user to the right
-    # place visually.
+    # 1. focus-panel --panel <surface-uuid> — lands on the exact tab
+    if pane.pane_id and _run_focus(
+        cmux_bin, "focus-panel", "--panel", pane.pane_id, pane.workspace_id
+    ):
+        return True
+    # 2. focus-pane <pane-ref> — at least lands in the right pane
+    if pane.window_name and _run_focus(
+        cmux_bin, "focus-pane", None, pane.window_name, pane.workspace_id
+    ):
+        return True
+    # 3. select-workspace — lands in the right workspace
     if pane.workspace_id:
         return _select_workspace(pane.workspace_id)
     return False
+
+
+def _run_focus(
+    cmux_bin: str,
+    subcmd: str,
+    target_flag: str | None,
+    target: str,
+    workspace_id: str | None,
+) -> bool:
+    args = [cmux_bin, subcmd]
+    if target_flag:
+        args.extend([target_flag, target])
+    else:
+        args.append(target)
+    if workspace_id:
+        args.extend(["--workspace", workspace_id])
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        _log(f"{subcmd}: FileNotFoundError args={args}")
+        return False
+    _log(
+        f"{subcmd} rc={r.returncode} args={args} "
+        f"stdout={r.stdout!r} stderr={r.stderr!r}"
+    )
+    return r.returncode == 0
 
 
 def resume_in_new_workspace(session_id: str, cwd: str) -> bool:
@@ -259,6 +295,10 @@ def _run_cmux_json(args: list[str]) -> object | None:
         )
     except FileNotFoundError:
         return None
+    _log(
+        f"cmux-json args={args} rc={result.returncode} "
+        f"stdout={result.stdout[:600]!r} stderr={result.stderr[:200]!r}"
+    )
     if result.returncode != 0 or not result.stdout.strip():
         return None
     try:
