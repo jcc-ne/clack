@@ -1,4 +1,4 @@
-.PHONY: help build check publish-test smoke-test-testpypi release-create release-create-draft release-status release-view clean
+.PHONY: help build check publish-test smoke-test-testpypi release-tag release-create release-create-draft release-status release-view clean
 
 PACKAGE := clack-tui
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml | head -n 1)
@@ -11,6 +11,7 @@ help:
 	@printf "  make check               Run twine metadata checks on dist artifacts\n"
 	@printf "  make publish-test        Upload current version artifacts to TestPyPI\n"
 	@printf "  make smoke-test-testpypi Install and run from TestPyPI via uvx\n"
+	@printf "  make release-tag         Create and push the current version tag\n"
 	@printf "  make release-create      Create and publish GitHub release for current version\n"
 	@printf "  make release-create-draft Create GitHub draft release for current version\n"
 	@printf "  make release-status      List recent GitHub publish workflow runs\n"
@@ -29,11 +30,15 @@ publish-test: build check
 smoke-test-testpypi:
 	uvx --from $(PACKAGE)==$(VERSION) --refresh-package $(PACKAGE) --index-url $(TEST_PYPI_SIMPLE) --extra-index-url $(PYPI_SIMPLE) --index-strategy unsafe-best-match python -c "import shutil; import clack; import clack.__main__; assert shutil.which('clack'); assert shutil.which('clack-tui'); print(clack.__file__)"
 
-release-create:
-	gh release create v$(VERSION) --target main --title "v$(VERSION)" --generate-notes
+release-tag:
+	git rev-parse -q --verify refs/tags/v$(VERSION) >/dev/null || git tag v$(VERSION) main
+	git push origin refs/tags/v$(VERSION)
 
-release-create-draft:
-	gh release create v$(VERSION) --target main --title "v$(VERSION)" --generate-notes --draft
+release-create: release-tag
+	gh release create v$(VERSION) --title "v$(VERSION)" --generate-notes
+
+release-create-draft: release-tag
+	gh release create v$(VERSION) --title "v$(VERSION)" --generate-notes --draft
 
 release-status:
 	gh run list --workflow publish.yml --limit 5
