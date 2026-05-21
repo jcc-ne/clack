@@ -28,7 +28,8 @@ publish-test: build check
 	uvx twine upload -r testpypi dist/$(subst -,_,$(PACKAGE))-$(VERSION)*
 
 smoke-test-testpypi:
-	uvx --from $(PACKAGE)==$(VERSION) --refresh-package $(PACKAGE) --index-url $(TEST_PYPI_SIMPLE) --extra-index-url $(PYPI_SIMPLE) --index-strategy unsafe-best-match python -c "import shutil; import clack; import clack.__main__; assert shutil.which('clack'); assert shutil.which('clack-tui'); print(clack.__file__)"
+	uvx --from $(PACKAGE)==$(VERSION) --refresh-package $(PACKAGE) --index-url $(TEST_PYPI_SIMPLE) --extra-index-url $(PYPI_SIMPLE) --index-strategy unsafe-best-match python -c "import shutil; import clack; import clack.__main__; assert clack.__version__ == '$(VERSION)'; assert shutil.which('clack'); assert shutil.which('clack-tui'); print(clack.__file__)"
+	uvx --from $(PACKAGE)==$(VERSION) --refresh-package $(PACKAGE) --index-url $(TEST_PYPI_SIMPLE) --extra-index-url $(PYPI_SIMPLE) --index-strategy unsafe-best-match clack --version
 
 release-tag:
 	git rev-parse -q --verify refs/tags/v$(VERSION) >/dev/null || git tag v$(VERSION) main

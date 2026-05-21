@@ -11,6 +11,7 @@ from textual.events import Key
 from textual.widgets import Footer, Header, Input, LoadingIndicator, TabbedContent, TabPane, Tree
 from textual.worker import Worker, WorkerState
 
+from clack.version import get_version
 from clack.widgets.dashboard import DashboardTab
 from clack.widgets.dialog_viewer import DialogViewer
 from clack.widgets.query_console import QueryConsole
@@ -19,7 +20,7 @@ from clack.widgets.stats import StatsTab
 
 class ClackApp(App):
     CSS_PATH = "css/app.tcss"
-    TITLE = "clack"
+    TITLE = f"clack {get_version()}"
     BINDINGS = [
         Binding("1", "show_tab('dashboard')", "Dashboard", show=True),
         Binding("2", "show_tab('stats')", "Stats", show=True),
