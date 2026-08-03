@@ -10,6 +10,13 @@ from pathlib import Path
 
 PROJECTS_DIR = Path.home() / ".claude/projects"
 
+# Fallback birthtime window (seconds), used only when a process's exact encoded
+# project dir is missing and we scan sibling dirs instead. Tighter than the
+# exact-dir +300s grace because the sibling scan widens the candidate pool — a
+# loose window would let an unrelated session in the same parent tree get
+# claimed. 90s comfortably covers the observed 4-72s launch→JSONL-creation lag.
+_FALLBACK_BIRTH_WINDOW = 90.0
+
 
 @dataclass
 class ActivePane:
@@ -209,8 +216,10 @@ def _assign_sessions(
     # where distance = process_start - jsonl_birthtime (smaller = better match)
     candidates: list[tuple[int, str, float]] = []
 
-    # Cache project dir listings by encoded cwd
+    # Cache project dir listings by encoded cwd, and sibling scans by cwd, so a
+    # missing dir is only scanned once even with several unresolved processes.
     dir_cache: dict[str, list[tuple[str, float, float]]] = {}  # encoded -> [(sid, birth, mtime)]
+    sibling_cache: dict[str, list[tuple[str, float, float]]] = {}  # cwd -> [(sid, birth, mtime)]
 
     for pid, _tty, _resume_sid, start_ts in procs:
         cwd = pid_to_cwd.get(pid)
@@ -219,21 +228,25 @@ def _assign_sessions(
 
         encoded = re.sub(r"[/._]", "-", cwd)
         if encoded not in dir_cache:
-            project_dir = PROJECTS_DIR / encoded
-            entries = []
-            if project_dir.is_dir():
-                for f in project_dir.glob("*.jsonl"):
-                    try:
-                        st = f.stat()
-                        entries.append((f.stem, st.st_birthtime, st.st_mtime))
-                    except (OSError, AttributeError):
-                        pass
-            dir_cache[encoded] = entries
+            dir_cache[encoded] = _list_project_jsonls(PROJECTS_DIR / encoded)
 
-        for sid, birthtime, mtime in dir_cache[encoded]:
-            if birthtime <= start_ts + 300 and mtime >= start_ts:
-                distance = abs(start_ts - birthtime)
-                candidates.append((pid, sid, distance))
+        entries = dir_cache[encoded]
+        if entries:
+            # Exact-dir match: proven behavior, generous +300s grace window.
+            for sid, birthtime, mtime in entries:
+                if birthtime <= start_ts + 300 and mtime >= start_ts:
+                    candidates.append((pid, sid, abs(start_ts - birthtime)))
+        else:
+            # No project dir for this cwd — most often the working directory was
+            # renamed after the session started, so its JSONL history lives
+            # under the *old* encoded name. Scan sibling dirs sharing cwd's
+            # parent path, with a tighter window to keep the widened pool from
+            # claiming the wrong session.
+            if cwd not in sibling_cache:
+                sibling_cache[cwd] = _sibling_project_jsonls(cwd)
+            for sid, birthtime, mtime in sibling_cache[cwd]:
+                if abs(start_ts - birthtime) <= _FALLBACK_BIRTH_WINDOW and mtime >= start_ts:
+                    candidates.append((pid, sid, abs(start_ts - birthtime)))
 
     # Greedy assignment: sort by distance (closest match first),
     # assign each session to at most one process
@@ -250,6 +263,42 @@ def _assign_sessions(
         claimed_sessions.add(sid)
 
     return result
+
+
+def _list_project_jsonls(project_dir: Path) -> list[tuple[str, float, float]]:
+    """Return [(session_id, birthtime, mtime), ...] for one project dir."""
+    entries: list[tuple[str, float, float]] = []
+    if not project_dir.is_dir():
+        return entries
+    for f in project_dir.glob("*.jsonl"):
+        try:
+            st = f.stat()
+            entries.append((f.stem, st.st_birthtime, st.st_mtime))
+        except (OSError, AttributeError):
+            pass
+    return entries
+
+
+def _sibling_project_jsonls(cwd: str) -> list[tuple[str, float, float]]:
+    """JSONLs from project dirs whose encoded name shares cwd's parent path.
+
+    Used as a fallback when the exact encoded project dir for a process cwd is
+    missing — typically because the working directory was renamed after the
+    session started, leaving its JSONL history under the old encoded name. A
+    rename changes only the trailing path segment, so restricting to dirs that
+    share cwd's encoded parent prefix keeps the pool to a handful of siblings
+    instead of every project dir (a stat-only scan; contents are never read).
+    """
+    prefix = re.sub(r"[/._]", "-", str(Path(cwd).parent)) + "-"
+    out: list[tuple[str, float, float]] = []
+    try:
+        children = list(PROJECTS_DIR.iterdir())
+    except OSError:
+        return out
+    for d in children:
+        if d.is_dir() and d.name.startswith(prefix):
+            out.extend(_list_project_jsonls(d))
+    return out
 
 
 def jump_to_pane(pane: ActivePane) -> None:
