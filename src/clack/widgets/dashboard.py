@@ -8,14 +8,18 @@ from pathlib import Path
 
 import duckdb
 from rich.text import Text
+from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.widget import Widget
 from textual.widgets import DataTable, Input, Static
+from textual.widgets.data_table import CellDoesNotExist
 
+from clack.github import PRInfo
 from clack.models import SessionSummary
 
 PROJECTS_DIR = Path.home() / ".claude/projects"
+PR_COLUMN_KEY = "pr"
 
 
 class DashboardTab(Widget):
@@ -24,6 +28,7 @@ class DashboardTab(Widget):
     BINDINGS = [
         Binding("r", "refresh", "Refresh"),
         Binding("v", "view_dialog", "View Dialog"),
+        Binding("p", "open_pr", "Open PR"),
         Binding("slash", "focus_search", "Search"),
         Binding("escape", "clear_search", "Clear Search"),
     ]
@@ -35,6 +40,10 @@ class DashboardTab(Widget):
         self._db: duckdb.DuckDBPyConnection | None = None
         self._active_panes: dict[str, str] = {}  # session_id -> pane label
         self._session_states: dict[str, str] = {}  # session_id -> "working" | "waiting"
+        # session_id -> PRInfo. Unlike the dicts above this is never cleared —
+        # PR lookups are slow, so we keep showing the last known value while a
+        # refresh is in flight.
+        self._pr_info: dict[str, PRInfo] = {}
         self._data_loaded: bool = False
 
     def compose(self) -> ComposeResult:
@@ -51,6 +60,7 @@ class DashboardTab(Widget):
         table.add_column("Updated", width=12)
         table.add_column("Project", width=18)
         table.add_column("Summary", width=35)
+        table.add_column("PR", width=20, key=PR_COLUMN_KEY)
         table.add_column("Model", width=14)
         table.add_column("Turns", width=5)
 
@@ -70,6 +80,34 @@ class DashboardTab(Widget):
         self.filtered = list(self.sessions)
         self._refresh_active_panes()
         self._populate_table()
+        self._fetch_pr_status()
+
+    @work(thread=True, exclusive=True, group="pr")
+    def _fetch_pr_status(self) -> None:
+        """Look up PRs for every session's branch off the main thread.
+
+        Results are applied per repo as they arrive, so the column fills in
+        progressively rather than waiting on the slowest repo.
+        """
+        from clack.github import build_pr_map
+
+        def on_partial(partial: dict[str, PRInfo]) -> None:
+            self.app.call_from_thread(self._apply_pr_map, partial)
+
+        try:
+            build_pr_map(self.sessions, on_partial=on_partial)
+        except Exception:
+            pass
+
+    def _apply_pr_map(self, mapping: dict[str, PRInfo]) -> None:
+        """Patch PR cells in place — this lands while the user is scrolling."""
+        self._pr_info.update(mapping)
+        table = self.query_one(DataTable)
+        for sid, pr in mapping.items():
+            try:
+                table.update_cell(sid, PR_COLUMN_KEY, _pr_cell(pr))
+            except CellDoesNotExist:
+                pass  # filtered out by search, or gone since the fetch started
 
     def _refresh_active_panes(self) -> None:
         from clack.tmux import get_active_claude_panes
@@ -113,8 +151,9 @@ class DashboardTab(Widget):
                     live = Text(f"● {label}", style="green")
             else:
                 live = Text("")
+            pr_cell = _pr_cell(self._pr_info.get(s.session_id))
             table.add_row(
-                live, date, updated, short_project, summary, short_model,
+                live, date, updated, short_project, summary, pr_cell, short_model,
                 str(s.turn_count), key=s.session_id,
             )
 
@@ -128,8 +167,14 @@ class DashboardTab(Widget):
                     f"  branch: {session.git_branch}"
                     if session.git_branch else ""
                 )
+                pr = self._pr_info.get(session.session_id)
+                if pr:
+                    icon, label, _ = pr.display
+                    pr_part = f"  PR: {icon} {label} {pr.state.replace('_', ' ')}"
+                else:
+                    pr_part = ""
                 detail.update(
-                    f"cwd: {session.cwd or '?'}{branch}  "
+                    f"cwd: {session.cwd or '?'}{branch}{pr_part}  "
                     f"turns: {session.turn_count}  "
                     f"ver: {session.version or '?'}  "
                     f"id: {session.session_id[:8]}"
@@ -149,17 +194,39 @@ class DashboardTab(Widget):
         resume_session(self.app, session.session_id, session.cwd or ".")
 
     def action_view_dialog(self) -> None:
+        sid = self._cursor_session_id()
+        if sid is None:
+            return
+        session = self._find_session(sid)
+        if session:
+            self.app.show_dialog(  # type: ignore[attr-defined]
+                sid, session.title or session.summary[:40],
+            )
+
+    def action_open_pr(self) -> None:
+        """Open the highlighted session's PR in a browser (`gh pr view -w`)."""
+        sid = self._cursor_session_id()
+        if sid is None:
+            return
+        pr = self._pr_info.get(sid)
+        if pr is None:
+            self.notify("No PR found for this session's branch", severity="warning")
+            return
+
+        from clack.github import open_pr_in_browser
+
+        if not open_pr_in_browser(pr):
+            self.notify(f"Could not open {pr.label}", severity="error")
+
+    def _cursor_session_id(self) -> str | None:
         table = self.query_one(DataTable)
-        if table.cursor_row is not None:
-            cursor_row = table.cursor_row
-            keys = list(table.rows.keys())
-            if cursor_row < len(keys):
-                sid = keys[cursor_row].value
-                session = self._find_session(sid)
-                if session:
-                    self.app.show_dialog(  # type: ignore[attr-defined]
-                        sid, session.title or session.summary[:40],
-                    )
+        cursor_row = table.cursor_row
+        if cursor_row is None:
+            return None
+        keys = list(table.rows.keys())
+        if cursor_row >= len(keys):
+            return None
+        return keys[cursor_row].value
 
     def _refresh_data(self) -> None:
         if self._db and self._data_loaded:
@@ -217,6 +284,14 @@ class DashboardTab(Widget):
             if s.session_id == session_id:
                 return s
         return None
+
+
+def _pr_cell(pr: PRInfo | None) -> Text:
+    """Render a PR as `<icon> repo#number`, or blank when there's no PR."""
+    if pr is None:
+        return Text("")
+    icon, label, style = pr.display
+    return Text(f"{icon} {label}", style=style)
 
 
 def _relative_time(timestamp: str) -> str:

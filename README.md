@@ -53,8 +53,22 @@ clack reads your Claude Code session files directly from `~/.claude/projects/` �
 | `Esc` | Clear search |
 | `Enter` | Resume session (opens `claude --resume`) |
 | `v` | View full conversation |
+| `p` | Open the session's PR in a browser (`gh pr view -w`) |
 | `r` | Refresh session list |
 | `q` | Quit |
+
+**PR column:** Each session records the git branch it was working on, so clack can show the pull request that branch belongs to — `repo#number` with a colored icon for its state:
+
+| | State |
+|---|-------|
+| `○` blue | open |
+| `◐` yellow | commented |
+| `◐` red | changes requested |
+| `●` green | approved |
+| `✔` dim | merged |
+| `✕` dim | closed |
+
+This needs the [`gh` CLI](https://cli.github.com/) on your `PATH` and authenticated; without it the column is simply blank. PRs are fetched in the background — one `gh pr list` per repo, several repos at a time, cached for five minutes — so the dashboard stays responsive and the column fills in repo by repo.
 
 **tmux / cmux:** If clack is running inside a tmux session, resuming opens the session in a new tmux window (or jumps to the existing pane if that session is already live). The same behavior works inside [cmux](https://github.com/manaflow-ai/cmux) — clack opens a new cmux workspace via `cmux new-workspace --cwd ... --command ...`, or focuses the existing pane with `cmux focus-pane`. Outside any multiplexer, clack suspends the TUI, runs `claude --resume`, and returns when you exit.
 
