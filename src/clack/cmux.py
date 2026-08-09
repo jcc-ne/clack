@@ -25,9 +25,8 @@ from pathlib import Path
 
 from clack.tmux import (
     ActivePane,
-    _assign_sessions,
-    _batch_get_cwds,
     _resume_suspended,
+    resolve_session_ids,
 )
 
 _DEBUG_LOG = Path.home() / ".cache" / "clack" / "cmux.log"
@@ -105,13 +104,13 @@ def get_active_claude_panes() -> list[ActivePane]:
     pid_to_env = _batch_get_envs([p[0] for p in claude_procs])
     _log(f"pid_to_env={pid_to_env}  surface_to_pane_keys={list(surface_to_pane.keys())}")
 
-    # 5. Resolve session_id for processes that weren't launched with --resume <id>.
-    needs_resolve = [p for p in claude_procs if p[2] is None]
-    pid_to_cwd = _batch_get_cwds([p[0] for p in needs_resolve]) if needs_resolve else {}
-    pid_to_session = _assign_sessions(needs_resolve, pid_to_cwd)
+    # 5. Resolve each process to its session. Shared with the tmux backend —
+    # ~/.claude/sessions/<pid>.json is written by Claude Code itself, so it
+    # carries no multiplexer state and works the same under cmux.
+    pid_to_session, pid_to_status = resolve_session_ids(claude_procs)
 
     active: list[ActivePane] = []
-    for pid, tty, resume_sid, _start_ts in claude_procs:
+    for pid, tty, _resume_sid, _start_ts in claude_procs:
         env = pid_to_env.get(pid, {})
         surface_id = env.get("CMUX_SURFACE_ID")
         pane_info = surface_to_pane.get(surface_id) if surface_id else None
@@ -126,14 +125,14 @@ def get_active_claude_panes() -> list[ActivePane]:
                 ),
             }
 
-        session_id = resume_sid or pid_to_session.get(pid)
         # For cmux we stash the surface UUID in pane_id (it's what focus-panel
         # consumes to land on the correct tab) and the pane_ref in window_name
         # (used as a fallback for focus-pane if focus-panel doesn't exist).
         active.append(ActivePane(
             pid=pid,
             tty=tty,
-            session_id=session_id,
+            session_id=pid_to_session.get(pid),
+            status=pid_to_status.get(pid),
             pane_id=pane_info["surface_id"] if pane_info else None,
             window_name=pane_info["pane_ref"] if pane_info else None,
             session_name=pane_info["workspace_name"] if pane_info else None,
