@@ -54,7 +54,10 @@ clack reads your Claude Code session files directly from `~/.claude/projects/` �
 | `Enter` | Resume session (opens `claude --resume`) |
 | `v` | View full conversation |
 | `p` | Open the session's PR in a browser (`gh pr view -w`) |
+| `o` | Page the session's plan doc (`$PAGER`, default `less`) |
+| `O` | Open a shell in the session's scratchpad dir |
 | `r` | Refresh session list |
+| `a` | Load all history into `raw_records` (see [Memory](#memory)) |
 | `q` | Quit |
 
 **PR column:** Each session records the git branch it was working on, so clack can show the pull request that branch belongs to — `repo#number` with a colored icon for its state:
@@ -72,7 +75,9 @@ This needs the [`gh` CLI](https://cli.github.com/) on your `PATH` and authentica
 
 **tmux / cmux:** If clack is running inside a tmux session, resuming opens the session in a new tmux window (or jumps to the existing pane if that session is already live). The same behavior works inside [cmux](https://github.com/manaflow-ai/cmux) — clack opens a new cmux workspace via `cmux new-workspace --cwd ... --command ...`, or focuses the existing pane with `cmux focus-pane`. Outside any multiplexer, clack suspends the TUI, runs `claude --resume`, and returns when you exit.
 
-If the DuckDB FTS extension is unavailable, dashboard search falls back to simple substring matching.
+**Plan column:** A session that ended a plan-mode turn wrote a plan doc to `~/.claude/plans/`. Those sessions are marked `▤` in the Plan column (dimmed when the file has since been deleted), the doc's name shows in the detail bar, and `o` pages it in a new window. Plan bodies are recorded in the transcript itself, so they stay searchable even after the file is gone.
+
+**Search scope:** The full-text index covers each session's early user messages, its title, summary, and cwd, and the body of its plan doc. If the DuckDB FTS extension is unavailable, dashboard search falls back to simple substring matching.
 
 ### Query console
 
@@ -84,7 +89,7 @@ The Query console exposes your session data as DuckDB SQL views:
 | `v_assistant_turns` | Individual assistant turns with token counts |
 | `v_stats` | Aggregated usage by model |
 | `v_sessions_by_day` | Daily session and token totals |
-| `raw_records` | Raw JSONL records |
+| `raw_records` | Raw JSONL records — recently active sessions only; press `a` to load all history |
 
 Example queries:
 
@@ -99,6 +104,19 @@ FROM v_assistant_turns GROUP BY 1 ORDER BY 2 DESC LIMIT 10;
 ```
 
 ---
+
+### Memory
+
+clack holds your session history in an in-memory DuckDB. To keep that bounded, transcripts for
+sessions untouched for more than 14 days are not kept resident — only their aggregates are: the
+dashboard row, token totals, and search text. Everything you see stays complete; the Dashboard,
+Stats and search all cover your full history regardless of age, and opening an old conversation
+reads that one file from disk on demand.
+
+The one place the split is visible is the Query console, where `raw_records` holds recent sessions
+only. Press `a` to load the archived transcripts into it — this costs roughly whatever those files
+weigh on disk, and restarting clack releases it again.
+
 
 ## Dev setup
 

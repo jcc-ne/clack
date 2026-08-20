@@ -9,6 +9,15 @@ from textual.binding import Binding
 from textual.widget import Widget
 from textual.widgets import DataTable, Input, Static
 
+_VIEWS_HELP_PARTIAL = (
+    "Views: v_sessions, v_assistant_turns, v_stats, v_sessions_by_day  |  "
+    "raw_records: recent sessions only — press 'a' to load all history"
+)
+_VIEWS_HELP_FULL = (
+    "Views: v_sessions, v_assistant_turns, v_stats, v_sessions_by_day  |  "
+    "raw_records: all history loaded"
+)
+
 
 class QueryConsole(Widget):
     BINDINGS = [
@@ -20,10 +29,7 @@ class QueryConsole(Widget):
     _history_idx: int = -1
 
     def compose(self) -> ComposeResult:
-        yield Static(
-            "Views: v_sessions, v_assistant_turns, v_stats, v_sessions_by_day, raw_records",
-            id="views-help",
-        )
+        yield Static(_VIEWS_HELP_PARTIAL, id="views-help")
         yield DataTable(id="query-results")
         yield Input(
             placeholder="SQL> SELECT * FROM v_sessions LIMIT 10  (Enter to execute)",
@@ -37,6 +43,9 @@ class QueryConsole(Widget):
 
     def set_db(self, db: duckdb.DuckDBPyConnection) -> None:
         self._db = db
+
+    def set_full_history_loaded(self) -> None:
+        self.query_one("#views-help", Static).update(_VIEWS_HELP_FULL)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "query-input":

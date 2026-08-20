@@ -28,6 +28,7 @@ class ClackApp(App):
         Binding("4", "show_tab('query')", "Query", show=True),
         Binding("q", "quit", "Quit", show=True),
         Binding("t", "switch_theme", "Theme", show=True),
+        Binding("a", "load_all_history", "Load All", show=True),
         Binding("G", "nav_end", show=False),
         Binding("ctrl+f", "nav_page_down", show=False),
         Binding("ctrl+b", "nav_page_up", show=False),
@@ -37,6 +38,7 @@ class ClackApp(App):
 
     db: duckdb.DuckDBPyConnection | None = None
     _dashboard: DashboardTab | None = None
+    _full_history_loaded: bool = False
     _g_pending: bool = False
 
     def compose(self) -> ComposeResult:
@@ -83,6 +85,48 @@ class ClackApp(App):
                 self._dashboard._refresh_data()
             except Exception:
                 pass
+
+    def action_load_all_history(self) -> None:
+        """Pull archived transcripts into raw_records for the Query tab.
+
+        Sessions older than the archive cutoff are held only as aggregates, so
+        SQL against raw_records omits their transcripts. This trades memory to
+        make that complete; restart to get the memory back.
+        """
+        if self.db is None:
+            return
+        if self._full_history_loaded:
+            self.notify("Full history is already loaded.")
+            return
+        from clack.db import has_archived_sessions
+
+        if not has_archived_sessions(self.db):
+            self.notify("No archived sessions — raw_records already covers all history.")
+            return
+        self.notify("Loading archived transcripts...")
+        self._load_all_history()
+
+    @work(thread=True, group="hydrate", exclusive=True)
+    def _load_all_history(self) -> None:
+        from clack.db import load_full_history
+
+        assert self.db is not None
+        try:
+            sessions, records = load_full_history(self.db)
+        except Exception as exc:
+            self.call_from_thread(
+                self.notify, f"Load failed: {exc}", severity="error"
+            )
+            return
+        self._full_history_loaded = True
+        self.call_from_thread(self._on_full_history_loaded, sessions, records)
+
+    def _on_full_history_loaded(self, sessions: int, records: int) -> None:
+        self.query_one(QueryConsole).set_full_history_loaded()
+        self.notify(
+            f"Loaded {records:,} records from {sessions} archived sessions — "
+            "raw_records now covers all history."
+        )
 
     def on_key(self, event: Key) -> None:
         # Skip vim nav when an Input widget has focus
