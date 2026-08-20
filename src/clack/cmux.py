@@ -26,6 +26,7 @@ from pathlib import Path
 from clack.tmux import (
     ActivePane,
     _resume_suspended,
+    is_in_tmux,
     resolve_session_ids,
 )
 
@@ -44,7 +45,12 @@ def _log(msg: str) -> None:
 
 
 def is_in_cmux() -> bool:
-    return "CMUX_WORKSPACE_ID" in os.environ
+    """True when cmux — and not a real tmux inside a cmux tab — owns panes.
+
+    Running tmux inside a cmux tab leaves CMUX_WORKSPACE_ID set, but the panes
+    the user sees are tmux's, so the tmux backend has to win that case.
+    """
+    return "CMUX_WORKSPACE_ID" in os.environ and not is_in_tmux()
 
 
 # Known install paths to probe if `cmux` isn't on PATH (e.g. clack-tui was

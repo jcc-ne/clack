@@ -26,6 +26,11 @@ STORE_PATH = Path.home() / ".cache" / "clack" / "last_loc.json"
 # roughly the same horizon a user would plausibly want to jump back to.
 _MAX_AGE = timedelta(days=30)
 
+# How stale the on-disk `seen_at` may get before a location-unchanged refresh
+# earns a write. Refreshes land every few seconds, so writing each one is pure
+# churn — but never writing lets _MAX_AGE evict a session that's still running.
+_SEEN_AT_REFRESH = timedelta(hours=6)
+
 _cache: dict[str, dict] | None = None
 
 
@@ -44,7 +49,7 @@ def get(session_id: str) -> dict | None:
 def record(panes: Iterable[ActivePane]) -> None:
     """Upsert one entry per located pane, writing only when something changed."""
     store = load()
-    now = datetime.now().isoformat(timespec="seconds")
+    now = datetime.now()
     changed = False
 
     for pane in panes:
@@ -57,16 +62,16 @@ def record(panes: Iterable[ActivePane]) -> None:
             "pane_index": pane.pane_index,
             "window_name": pane.window_name,
             "label": pane.label,
-            "seen_at": now,
+            "seen_at": now.isoformat(timespec="seconds"),
         }
         prev = store.get(pane.session_id)
-        if prev == entry:
-            continue
-        # A refresh that only bumps seen_at isn't worth a disk write.
-        if prev is not None and {k: v for k, v in prev.items() if k != "seen_at"} == {
-            k: v for k, v in entry.items() if k != "seen_at"
-        }:
-            store[pane.session_id] = entry
+        # When only seen_at moved, hold off on the write until the stored stamp
+        # is stale enough that _prune would start eyeing a running session.
+        if (
+            prev is not None
+            and _same_location(prev, entry)
+            and now - _seen_at(prev) < _SEEN_AT_REFRESH
+        ):
             continue
         store[pane.session_id] = entry
         changed = True
@@ -75,16 +80,26 @@ def record(panes: Iterable[ActivePane]) -> None:
         _write(_prune(store))
 
 
+def _same_location(prev: dict, entry: dict) -> bool:
+    return {k: v for k, v in prev.items() if k != "seen_at"} == {
+        k: v for k, v in entry.items() if k != "seen_at"
+    }
+
+
+def _seen_at(entry: dict) -> datetime:
+    """Parse an entry's timestamp; unreadable stamps read as maximally stale."""
+    try:
+        return datetime.fromisoformat(entry["seen_at"])
+    except (KeyError, TypeError, ValueError):
+        return datetime.min
+
+
 def _prune(store: dict[str, dict]) -> dict[str, dict]:
     cutoff = datetime.now() - _MAX_AGE
-    kept: dict[str, dict] = {}
-    for sid, entry in store.items():
-        try:
-            if datetime.fromisoformat(entry["seen_at"]) >= cutoff:
-                kept[sid] = entry
-        except (KeyError, TypeError, ValueError):
-            pass  # unparseable entry — drop it
-    return kept
+    # Unparseable stamps read as datetime.min, so they fall out here too.
+    return {
+        sid: entry for sid, entry in store.items() if _seen_at(entry) >= cutoff
+    }
 
 
 def _read() -> dict[str, dict]:

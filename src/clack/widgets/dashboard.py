@@ -55,7 +55,7 @@ class DashboardTab(Widget):
         table = self.query_one(DataTable)
         table.cursor_type = "row"
         table.cursor_foreground_priority = "renderable"
-        table.add_column("Live", width=24)
+        table.add_column("Live", width=4)
         table.add_column("Date", width=10)
         table.add_column("Updated", width=12)
         table.add_column("Project", width=18)
@@ -152,20 +152,15 @@ class DashboardTab(Widget):
             label = self._active_panes.get(s.session_id)
             if label:
                 state = self._session_states.get(s.session_id, "working")
-                if state == "waiting":
-                    live = Text(f"● {label}", style="red")
-                elif state == "done" and _is_recent(s.last_active):
-                    live = Text(f"● {label}", style="yellow")
-                elif state == "done":
-                    live = Text(f"● {label}")
-                else:
-                    live = Text(f"● {label}", style="green")
+                style = _live_style(state, _is_recent(s.last_active))
+                live = Text("●", style=style)
             else:
+                style = "dim"
                 live = Text("")
-            # Blank for live rows — the Live column already shows the location.
-            last_loc = Text("") if label else _last_loc_cell(
-                lastloc.get(s.session_id)
-            )
+            # Always rendered, live or not: the pane a session sits in is worth
+            # showing even while it's running, and the live style carries over
+            # so the location itself reads as the status.
+            last_loc = _last_loc_cell(lastloc.get(s.session_id), label, style)
             pr_cell = _pr_cell(self._pr_info.get(s.session_id))
             table.add_row(
                 live, date, updated, short_project, summary, pr_cell,
@@ -301,14 +296,27 @@ class DashboardTab(Widget):
         return None
 
 
-def _last_loc_cell(entry: dict | None) -> Text:
+def _live_style(state: str, recent: bool) -> str:
+    """Colour for a live session's dot and location."""
+    if state == "waiting":
+        return "red"  # blocked on a prompt — the most useful thing to spot
+    if state == "done":
+        return "yellow" if recent else "white"
+    return "green"
+
+
+def _last_loc_cell(
+    entry: dict | None, fallback: str | None = None, style: str = "dim"
+) -> Text:
     """Render the last-seen mux location, or blank when we never saw one.
 
     Rebuilt from the stored fields rather than the stored `label` so records
-    written by an older format still render with the session prefix.
+    written by an older format still render with the session prefix. `fallback`
+    is the live pane's own label, used for a running session with no record yet
+    (notably outside any multiplexer, where it reads `pid:<n>`).
     """
     if not entry:
-        return Text("")
+        return Text(fallback or "", style=style)
     if entry.get("mux") == "tmux" and entry.get("window_name") is not None:
         from clack.tmux import format_tmux_label
 
@@ -318,7 +326,7 @@ def _last_loc_cell(entry: dict | None) -> Text:
         )
     else:
         text = str(entry.get("label") or "")
-    return Text(text, style="dim")
+    return Text(text or (fallback or ""), style=style)
 
 
 def _pr_cell(pr: PRInfo | None) -> Text:

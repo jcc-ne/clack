@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 PROJECTS_DIR = Path.home() / ".claude/projects"
@@ -536,8 +537,29 @@ def find_pane_for_session(session_id: str) -> ActivePane | None:
 
 
 def is_in_tmux() -> bool:
-    # cmux's tmux-compat shim sets TMUX too; treat that as cmux, not tmux.
-    return "TMUX" in os.environ and "CMUX_WORKSPACE_ID" not in os.environ
+    """True when a real tmux server owns this terminal.
+
+    cmux's tmux-compat shim sets TMUX too, but so does a real tmux running
+    inside a cmux tab — and there both markers are present. We settle it by
+    asking for the current pane's tty, which only real tmux reports.
+    """
+    if "TMUX" not in os.environ:
+        return False
+    if "CMUX_WORKSPACE_ID" not in os.environ:
+        return True
+    return _tmux_reports_pane_tty()
+
+
+@lru_cache(maxsize=1)
+def _tmux_reports_pane_tty() -> bool:
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "#{pane_tty}"],
+            capture_output=True, text=True, check=False,
+        )
+    except FileNotFoundError:
+        return False
+    return r.returncode == 0 and r.stdout.strip().startswith("/dev/")
 
 
 def _resume_tmux_window(session_id: str, cwd: str) -> None:
