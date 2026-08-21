@@ -212,7 +212,14 @@ def _run_focus(
 
 
 def resume_in_new_workspace(session_id: str, cwd: str) -> bool:
-    """Open a new cmux workspace running `claude --resume`, and focus it.
+    """Open a new cmux workspace running `claude --resume`, and focus it."""
+    return new_workspace(
+        f"claude-{session_id[:8]}", cwd, f"claude --resume {session_id}"
+    )
+
+
+def new_workspace(name: str, cwd: str, command: str) -> bool:
+    """Open a new cmux workspace running `command`, and focus it.
 
     cmux's `new-workspace` returns `OK workspace:NN` on success but doesn't
     bring the new workspace to the front, so we parse the ref out and follow
@@ -221,12 +228,11 @@ def resume_in_new_workspace(session_id: str, cwd: str) -> bool:
     cmux_bin = _cmux_bin()
     if not cmux_bin:
         return False
-    name = f"claude-{session_id[:8]}"
     args = [
         cmux_bin, "new-workspace",
         "--name", name,
         "--cwd", cwd,
-        "--command", f"claude --resume {session_id}",
+        "--command", command,
     ]
     try:
         r = subprocess.run(args, capture_output=True, text=True, check=False)

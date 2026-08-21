@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,6 +31,8 @@ class DashboardTab(Widget):
         Binding("r", "refresh", "Refresh"),
         Binding("v", "view_dialog", "View Dialog"),
         Binding("p", "open_pr", "Open PR"),
+        Binding("o", "open_plan", "Open Plan"),
+        Binding("O", "open_scratchpad", "Scratchpad"),
         Binding("slash", "focus_search", "Search"),
         Binding("escape", "clear_search", "Clear Search"),
     ]
@@ -60,6 +64,7 @@ class DashboardTab(Widget):
         table.add_column("Updated", width=12)
         table.add_column("Project", width=18)
         table.add_column("Summary", width=35)
+        table.add_column("Plan", width=4)
         table.add_column("PR", width=20, key=PR_COLUMN_KEY)
         table.add_column("Model", width=14)
         table.add_column("Turns", width=5)
@@ -163,8 +168,9 @@ class DashboardTab(Widget):
             last_loc = _last_loc_cell(lastloc.get(s.session_id), label, style)
             pr_cell = _pr_cell(self._pr_info.get(s.session_id))
             table.add_row(
-                live, date, updated, short_project, summary, pr_cell,
-                short_model, str(s.turn_count), last_loc, key=s.session_id,
+                live, date, updated, short_project, summary, _plan_cell(s),
+                pr_cell, short_model, str(s.turn_count), last_loc,
+                key=s.session_id,
             )
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
@@ -183,8 +189,12 @@ class DashboardTab(Widget):
                     pr_part = f"  PR: {icon} {label} {pr.state.replace('_', ' ')}"
                 else:
                     pr_part = ""
+                plan_part = (
+                    f"  plan: {Path(session.plan_path).name}"
+                    if session.plan_path else ""
+                )
                 detail.update(
-                    f"cwd: {session.cwd or '?'}{branch}{pr_part}  "
+                    f"cwd: {session.cwd or '?'}{branch}{pr_part}{plan_part}  "
                     f"turns: {session.turn_count}  "
                     f"ver: {session.version or '?'}  "
                     f"id: {session.session_id[:8]}"
@@ -227,6 +237,52 @@ class DashboardTab(Widget):
 
         if not open_pr_in_browser(pr):
             self.notify(f"Could not open {pr.label}", severity="error")
+
+    def action_open_plan(self) -> None:
+        """Page the highlighted session's plan doc in a new window."""
+        session = self._cursor_session()
+        if session is None:
+            return
+        if not session.plan_path:
+            self.notify("No plan doc for this session", severity="warning")
+            return
+        plan = Path(session.plan_path)
+        if not plan.is_file():
+            self.notify(f"Plan doc is gone: {plan.name}", severity="warning")
+            return
+
+        from clack.tmux import open_in_window
+
+        pager = os.environ.get("PAGER") or "less"
+        open_in_window(
+            self.app,
+            f"plan-{session.session_id[:8]}",
+            str(plan.parent),
+            f"{pager} {shlex.quote(str(plan))}",
+        )
+
+    def action_open_scratchpad(self) -> None:
+        """Open a shell in the highlighted session's scratchpad dir."""
+        session = self._cursor_session()
+        if session is None:
+            return
+
+        from clack.tmux import open_in_window, scratchpad_dir
+
+        d = scratchpad_dir(session.cwd or "", session.session_id)
+        if d is None:
+            self.notify("No scratchpad dir for this session", severity="warning")
+            return
+        open_in_window(
+            self.app,
+            f"scratch-{session.session_id[:8]}",
+            str(d),
+            os.environ.get("SHELL") or "bash",
+        )
+
+    def _cursor_session(self) -> SessionSummary | None:
+        sid = self._cursor_session_id()
+        return self._find_session(sid) if sid is not None else None
 
     def _cursor_session_id(self) -> str | None:
         table = self.query_one(DataTable)
@@ -335,6 +391,15 @@ def _pr_cell(pr: PRInfo | None) -> Text:
         return Text("")
     icon, label, style = pr.display
     return Text(f"{icon} {label}", style=style)
+
+
+def _plan_cell(session: SessionSummary) -> Text:
+    """Render a plan-doc marker, dimmed when the file is already gone."""
+    if not session.plan_path:
+        return Text("")
+    if Path(session.plan_path).is_file():
+        return Text("▤")
+    return Text("▤", style="dim")
 
 
 def _relative_time(timestamp: str) -> str:

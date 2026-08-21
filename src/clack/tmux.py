@@ -382,6 +382,30 @@ def _list_project_jsonls(project_dir: Path) -> list[tuple[str, float, float]]:
     return entries
 
 
+def encode_project_slug(path: str) -> str:
+    """Encode a filesystem path the way Claude Code names its per-project dirs.
+
+    Used for both `~/.claude/projects/<slug>` and the scratchpad tree under
+    /tmp, which share the encoding.
+    """
+    return re.sub(r"[/._]", "-", path)
+
+
+def scratchpad_dir(cwd: str, session_id: str) -> Path | None:
+    """A session's scratchpad dir, or None when it no longer exists.
+
+    These live under /tmp, so they are routinely cleaned up out from under an
+    older session — absence is the normal case, not an error.
+    """
+    d = (
+        Path(f"/private/tmp/claude-{os.getuid()}")
+        / encode_project_slug(cwd)
+        / session_id
+        / "scratchpad"
+    )
+    return d if d.is_dir() else None
+
+
 def _sibling_project_jsonls(cwd: str) -> list[tuple[str, float, float]]:
     """JSONLs from project dirs whose encoded name shares cwd's parent path.
 
@@ -392,7 +416,7 @@ def _sibling_project_jsonls(cwd: str) -> list[tuple[str, float, float]]:
     share cwd's encoded parent prefix keeps the pool to a handful of siblings
     instead of every project dir (a stat-only scan; contents are never read).
     """
-    prefix = re.sub(r"[/._]", "-", str(Path(cwd).parent)) + "-"
+    prefix = encode_project_slug(str(Path(cwd).parent)) + "-"
     out: list[tuple[str, float, float]] = []
     try:
         children = list(PROJECTS_DIR.iterdir())
@@ -574,10 +598,35 @@ def _resume_tmux_window(session_id: str, cwd: str) -> None:
 
 def _resume_suspended(app, session_id: str, cwd: str) -> None:
     """Suspend the TUI and run claude directly."""
+    _run_suspended(app, cwd, f"claude --resume {session_id}")
+
+
+def _run_suspended(app, cwd: str, command: str) -> None:
+    """Suspend the TUI, run a command in `cwd`, then restore the TUI."""
     with app.suspend():
         original_cwd = os.getcwd()
         try:
             os.chdir(cwd)
-            os.system(f"claude --resume {session_id}")
+            os.system(command)
         finally:
             os.chdir(original_cwd)
+
+
+def open_in_window(app, name: str, cwd: str, command: str) -> None:
+    """Run a command in a new multiplexer window, or suspend the TUI for it.
+
+    Same three-way dispatch as resume_session, minus the jump-to-existing-pane
+    step: these windows are throwaway, so a second press opens a second one
+    rather than hunting for the first.
+    """
+    from clack import cmux
+
+    if cmux.is_in_cmux() and cmux.new_workspace(name, cwd, command):
+        return
+    if is_in_tmux():
+        subprocess.run(
+            ["tmux", "new-window", "-n", name, "-c", cwd, command],
+            check=False,
+        )
+        return
+    _run_suspended(app, cwd, command)

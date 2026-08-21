@@ -17,6 +17,7 @@ class SessionSummary:
     summary: str
     primary_model: str | None
     turn_count: int
+    plan_path: str | None = None
 
 
 @dataclass
