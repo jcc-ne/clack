@@ -1,6 +1,6 @@
 [project]
 name = "clack-tui"
-version = "0.4.0"
+version = "0.4.1"
 description = "TUI for browsing, searching, and resuming Claude Code sessions"
 readme = "README.md"
 license = { text = "MIT" }
