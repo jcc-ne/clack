@@ -289,6 +289,26 @@ def _sessions_sql(src: str) -> str:
             GROUP BY sessionId, message.model
         ),
         plans AS ({_plans_sql(src)}),
+        created_prs AS (
+            -- `gh pr create` prints the new PR's URL as its last line. This
+            -- catches PRs opened from a worktree, where the session's own
+            -- cwd/gitBranch never leave the original checkout.
+            SELECT sessionId, pr_url
+            FROM (
+                SELECT
+                    sessionId,
+                    timestamp,
+                    regexp_extract(
+                        json_extract_string(toolUseResult, '$.stdout'),
+                        '(https://github\\.com/[^/\\s]+/[^/\\s]+/pull/[0-9]+)\\s*$',
+                        1
+                    ) AS pr_url
+                FROM {src}
+                WHERE type = 'user' AND toolUseResult IS NOT NULL
+            )
+            WHERE pr_url != ''
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY sessionId ORDER BY timestamp DESC) = 1
+        ),
         session_times AS (
             SELECT
                 sessionId,
@@ -313,12 +333,14 @@ def _sessions_sql(src: str) -> str:
             END AS summary,
             m.model AS primary_model,
             COALESCE(m.turn_count, 0) AS turn_count,
-            p.plan_path
+            p.plan_path,
+            cp.pr_url
         FROM session_times st
         LEFT JOIN first_user_msg fu ON fu.sessionId = st.sessionId AND fu.rn = 1
         LEFT JOIN custom_titles ct ON ct.sessionId = st.sessionId
         LEFT JOIN slugs s ON s.sessionId = st.sessionId
         LEFT JOIN plans p ON p.sessionId = st.sessionId
+        LEFT JOIN created_prs cp ON cp.sessionId = st.sessionId
         LEFT JOIN (
             SELECT sessionId, model, turn_count,
                    ROW_NUMBER() OVER (PARTITION BY sessionId ORDER BY turn_count DESC) AS rn
@@ -654,6 +676,7 @@ def get_sessions(con: duckdb.DuckDBPyConnection) -> list[SessionSummary]:
             primary_model=r[8],
             turn_count=r[9],
             plan_path=r[10],
+            pr_url=r[11],
         )
         for r in rows
     ]

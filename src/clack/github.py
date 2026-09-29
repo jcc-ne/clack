@@ -10,6 +10,10 @@ request a session's work landed in. We resolve it in two steps:
   hundreds of sessions that's the difference between a handful of subprocesses
   and a stalled UI.
 
+A session that opened its PR from a worktree never records that branch (its
+cwd/gitBranch stay on the original checkout), so when the transcript shows a
+`gh pr create` URL we look the PR up by number instead.
+
 `gh` is optional: every helper here degrades to None/{} on any failure, so a
 machine without `gh` (or a session outside a git repo) just gets a blank PR
 column.
@@ -18,6 +22,7 @@ column.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -36,6 +41,8 @@ if TYPE_CHECKING:
 _PR_TTL_SECONDS = 300
 
 _PR_FIELDS = "number,headRefName,state,reviewDecision,latestReviews,isDraft,url"
+
+_PR_URL_RE = re.compile(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)")
 
 # state -> (icon, rich style). `●` matches the Live column's glyph; `commented`
 # and `changes_requested` share `◐` and differ only in color. Settled states
@@ -141,14 +148,22 @@ def _derive_state(pr: dict) -> str:
     return "draft" if pr.get("isDraft") else "open"
 
 
-# slug -> (fetched_at, {headRefName: PRInfo}). Read and written from several
-# worker threads; dict get/set is atomic, and the worst race is two worktrees of
-# the same repo both missing the cache and fetching it once each.
-_pr_cache: dict[str, tuple[float, dict[str, PRInfo]]] = {}
+@dataclass
+class _RepoPRs:
+    by_branch: dict[str, PRInfo]
+    by_number: dict[int, PRInfo]
 
 
-def _prs_for_repo(root: str, slug: str) -> dict[str, PRInfo]:
-    """All PRs for a repo, keyed by head branch. Cached with a TTL."""
+_NO_PRS = _RepoPRs({}, {})
+
+# slug -> (fetched_at, _RepoPRs). Read and written from several worker threads;
+# dict get/set is atomic, and the worst race is two worktrees of the same repo
+# both missing the cache and fetching it once each.
+_pr_cache: dict[str, tuple[float, _RepoPRs]] = {}
+
+
+def _prs_for_repo(slug: str) -> _RepoPRs:
+    """All recent PRs for a repo, keyed by head branch and number. TTL-cached."""
     cached = _pr_cache.get(slug)
     now = time.monotonic()
     if cached and now - cached[0] < _PR_TTL_SECONDS:
@@ -156,22 +171,22 @@ def _prs_for_repo(root: str, slug: str) -> dict[str, PRInfo]:
 
     gh = _gh_bin()
     if not gh:
-        return {}
+        return _NO_PRS
     out = _run(
-        [gh, "pr", "list", "--state", "all", "--limit", "200", "--json", _PR_FIELDS],
-        cwd=root,
+        [gh, "pr", "list", "-R", slug, "--state", "all", "--limit", "200",
+         "--json", _PR_FIELDS],
     )
     if not out:
-        return {}
+        return _NO_PRS
     try:
         raw = json.loads(out)
     except json.JSONDecodeError:
-        return {}
+        return _NO_PRS
     if not isinstance(raw, list):
-        return {}
+        return _NO_PRS
 
     short = slug.split("/")[-1]
-    by_branch: dict[str, PRInfo] = {}
+    prs = _RepoPRs({}, {})
     for pr in raw:
         if not isinstance(pr, dict):
             continue
@@ -188,25 +203,34 @@ def _prs_for_repo(root: str, slug: str) -> dict[str, PRInfo]:
             is_draft=bool(pr.get("isDraft")),
         )
         # gh lists newest first; keep the newest PR per branch.
-        by_branch.setdefault(branch, info)
+        prs.by_branch.setdefault(branch, info)
+        prs.by_number[number] = info
 
-    _pr_cache[slug] = (now, by_branch)
-    return by_branch
+    _pr_cache[slug] = (now, prs)
+    return prs
 
 
-def _map_one_repo(root: str, group: list[SessionSummary]) -> dict[str, PRInfo]:
-    """session_id -> PRInfo for the sessions living in one repo root."""
-    slug = _repo_slug(root)
+def _map_one_repo(
+    slug: str | None, root: str | None, group: list[SessionSummary]
+) -> dict[str, PRInfo]:
+    """session_id -> PRInfo for the sessions in one repo.
+
+    A session's own `pr_url` wins; otherwise fall back to matching its branch.
+    """
+    slug = slug or (_repo_slug(root) if root else None)
     if not slug:
         return {}
-    prs = _prs_for_repo(root, slug)
-    if not prs:
-        return {}
-    return {
-        s.session_id: prs[s.git_branch]
-        for s in group
-        if s.git_branch and s.git_branch in prs
-    }
+    prs = _prs_for_repo(slug)
+    result: dict[str, PRInfo] = {}
+    for s in group:
+        m = _PR_URL_RE.match(s.pr_url or "")
+        pr = (
+            prs.by_number.get(int(m.group(2))) if m
+            else prs.by_branch.get(s.git_branch or "")
+        )
+        if pr:
+            result[s.session_id] = pr
+    return result
 
 
 def build_pr_map(
@@ -227,23 +251,29 @@ def build_pr_map(
     if not _gh_bin():
         return {}
 
-    # Group sessions by repo root so each repo is fetched once. `git rev-parse`
-    # is local and cached, so this stays on the calling thread.
-    by_root: dict[str, list[SessionSummary]] = {}
+    # Group sessions by repo so each is fetched once: by slug when the session
+    # recorded a PR URL, else by repo root (`git rev-parse` is local and cached,
+    # so this stays on the calling thread). The two keyings can name the same
+    # repo; the PR cache dedupes the fetch.
+    groups: dict[tuple[str | None, str | None], list[SessionSummary]] = {}
     for s in sessions:
-        if not s.cwd or not s.git_branch:
+        m = _PR_URL_RE.match(s.pr_url or "")
+        if m:
+            key = (m.group(1), None)
+        elif s.cwd and s.git_branch and (root := _repo_root(s.cwd)):
+            key = (None, root)
+        else:
             continue
-        root = _repo_root(s.cwd)
-        if root:
-            by_root.setdefault(root, []).append(s)
+        groups.setdefault(key, []).append(s)
 
     result: dict[str, PRInfo] = {}
-    if not by_root:
+    if not groups:
         return result
 
-    with ThreadPoolExecutor(max_workers=min(max_workers, len(by_root))) as pool:
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(groups))) as pool:
         futures = [
-            pool.submit(_map_one_repo, root, group) for root, group in by_root.items()
+            pool.submit(_map_one_repo, slug, root, group)
+            for (slug, root), group in groups.items()
         ]
         for future in as_completed(futures):
             try:

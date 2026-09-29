@@ -18,6 +18,7 @@ class SessionSummary:
     primary_model: str | None
     turn_count: int
     plan_path: str | None = None
+    pr_url: str | None = None  # PR the session opened via `gh pr create`
 
 
 @dataclass
