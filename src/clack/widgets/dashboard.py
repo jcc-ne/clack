@@ -324,22 +324,29 @@ class DashboardTab(Widget):
 
         from clack.db import search_sessions_fts
 
+        q = query.lower()
+        substring_hits = [
+            s for s in self.sessions
+            if q in (s.summary or "").lower()
+            or q in (s.title or "").lower()
+            or q in (s.cwd or "").lower()
+            or q in (s.primary_model or "").lower()
+        ]
+
+        # FTS matches whole stemmed words only, so append substring hits to
+        # catch partial words typed mid-search (e.g. "taxo" -> "taxonomy").
         matching_ids = search_sessions_fts(self._db, query) if self._db else None
         if matching_ids is not None:
             id_order = {sid: i for i, sid in enumerate(matching_ids)}
-            self.filtered = sorted(
+            fts_hits = sorted(
                 [s for s in self.sessions if s.session_id in id_order],
                 key=lambda s: id_order[s.session_id],
             )
-        else:
-            q = query.lower()
-            self.filtered = [
-                s for s in self.sessions
-                if q in (s.summary or "").lower()
-                or q in (s.title or "").lower()
-                or q in (s.cwd or "").lower()
-                or q in (s.primary_model or "").lower()
+            self.filtered = fts_hits + [
+                s for s in substring_hits if s.session_id not in id_order
             ]
+        else:
+            self.filtered = substring_hits
         self._populate_table()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
